@@ -1884,9 +1884,14 @@ impl OpenSwarmConnector {
         let state = self.state.read().await;
         let swarm_id = state.current_swarm_id.clone();
         let self_id = state.agent_id.to_string();
+        // Use the registered agent name if one was set (e.g. "marie-curie"),
+        // falling back to the startup --agent-name flag.
+        let current_name = state.agent_names.get(&self_id)
+            .cloned()
+            .unwrap_or_else(|| self.config.agent.name.clone());
         let params = KeepAliveParams {
             agent_id: state.agent_id.clone(),
-            agent_name: Some(self.config.agent.name.clone()),
+            agent_name: Some(current_name),
             last_task_poll_at: state.member_last_task_poll.get(&self_id).cloned(),
             last_result_at: state.member_last_result.get(&self_id).cloned(),
             epoch: state.epoch_manager.current_epoch(),

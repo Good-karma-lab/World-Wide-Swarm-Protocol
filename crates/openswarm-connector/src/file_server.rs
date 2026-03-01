@@ -700,11 +700,8 @@ async fn api_agents(State(web): State<WebState>) -> Json<serde_json::Value> {
 
             let activity = s.agent_activity.get(&id);
             let tasks_processed = activity.map(|a| a.tasks_processed_count).unwrap_or(0);
-            let reputation = tasks_processed as f64 / 10.0_f64;
-            let uptime = seen_secs.map(|v| if v <= 45 { 1.0_f64 } else { (45.0 / v as f64).min(1.0) }).unwrap_or(0.0);
-            // Composite score: 0.25*PoC_stub + 0.40*reputation + 0.20*uptime + 0.15*stake_stub
-            let reputation_score = (0.25_f64 * 0.5 + 0.40 * reputation + 0.20 * uptime) * 100.0 / 100.0;
-            let reputation_score = (reputation_score * 100.0).round() / 100.0;
+            // Reputation grows without limit: each completed task adds 0.1
+            let reputation_score = (tasks_processed as f64 * 0.1 * 100.0).round() / 100.0;
             let can_inject_tasks = id == s.agent_id.to_string() || tasks_processed >= 5;
             // The self-agent is always connected — GossipSub doesn't echo messages
             // back to the sender, so seen_secs is unreliable for the local agent.
