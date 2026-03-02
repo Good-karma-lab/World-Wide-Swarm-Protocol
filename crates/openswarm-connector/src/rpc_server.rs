@@ -1276,6 +1276,7 @@ pub(crate) async fn handle_submit_result(
         state.task_results.insert(submission.task_id.clone(), submission.artifact.clone());
         let content_text = params
             .get("content")
+            .or_else(|| params.get("result_text"))
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
@@ -3334,5 +3335,53 @@ mod tests {
         // Should be Completed, NOT PendingReview
         assert_eq!(task.status, openswarm_protocol::TaskStatus::Completed,
             "task below threshold should stay Completed, got {:?}", task.status);
+    }
+
+    #[tokio::test]
+    async fn test_submit_result_stores_result_text_field() {
+        let state = make_minimal_state();
+        let network_handle = make_test_network_handle();
+        let inject_params = serde_json::json!({"task_id":"t-rtext","description":"test","tier_level":2,"epoch":1});
+        let _ = handle_inject_task(Some("1".into()), &inject_params, &state, &network_handle).await;
+        {
+            let mut s = state.write().await;
+            if let Some(t) = s.task_details.get_mut("t-rtext") {
+                t.parent_task_id = Some("parent-x".to_string());
+            }
+        }
+        let params = serde_json::json!({
+            "task_id": "t-rtext",
+            "agent_id": "did:swarm:test-self",
+            "result_text": "The answer is 42.",
+            "artifact": {}
+        });
+        let resp = handle_submit_result(Some("2".into()), &params, &state, &network_handle).await;
+        assert!(resp.error.is_none(), "submit should succeed: {:?}", resp.error);
+        let s = state.read().await;
+        assert_eq!(s.task_result_text.get("t-rtext").map(|s| s.as_str()), Some("The answer is 42."));
+    }
+
+    #[tokio::test]
+    async fn test_submit_result_stores_content_field() {
+        let state = make_minimal_state();
+        let network_handle = make_test_network_handle();
+        let inject_params = serde_json::json!({"task_id":"t-content","description":"test","tier_level":2,"epoch":1});
+        let _ = handle_inject_task(Some("1".into()), &inject_params, &state, &network_handle).await;
+        {
+            let mut s = state.write().await;
+            if let Some(t) = s.task_details.get_mut("t-content") {
+                t.parent_task_id = Some("parent-x".to_string());
+            }
+        }
+        let params = serde_json::json!({
+            "task_id": "t-content",
+            "agent_id": "did:swarm:test-self",
+            "content": "The answer is 42.",
+            "artifact": {}
+        });
+        let resp = handle_submit_result(Some("3".into()), &params, &state, &network_handle).await;
+        assert!(resp.error.is_none(), "submit should succeed: {:?}", resp.error);
+        let s = state.read().await;
+        assert_eq!(s.task_result_text.get("t-content").map(|s| s.as_str()), Some("The answer is 42."));
     }
 }
