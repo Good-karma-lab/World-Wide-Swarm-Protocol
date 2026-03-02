@@ -106,6 +106,7 @@ impl FileServer {
             .route("/api/identity", get(api_identity))
             .route("/api/network", get(api_network))
             .route("/api/reputation", get(api_reputation))
+            .route("/api/reputation/:did/events", get(api_reputation_events))
             .route("/api/directory", get(api_directory))
             .route("/api/names", get(api_names))
             .route("/api/keys", get(api_keys))
@@ -701,32 +702,28 @@ async fn api_agents(State(web): State<WebState>) -> Json<serde_json::Value> {
             let activity = s.agent_activity.get(&id);
             let tasks_processed = activity.map(|a| a.tasks_processed_count).unwrap_or(0);
 
-            // ── Multi-signal reputation (FIRE-inspired) ──────────────────────
-            // Signal 1: Reliability — tasks completed relative to tasks taken.
-            //   Uses Laplace smoothing (ε=1) so new agents start at ~0 instead
-            //   of undefined. The product tasks_done * reliability makes this
-            //   quadratic in completions: reliable agents grow faster.
-            let tasks_done = tasks_processed as f64;
-            let tasks_got  = activity.map(|a| a.tasks_assigned_count).unwrap_or(0) as f64;
-            let reliability = tasks_done / (tasks_got + 1.0);       // ∈ [0, tasks_done)
-            let signal_reliability = tasks_done * reliability * 0.10; // primary signal
-
-            // Signal 2: Deliberation honesty — did agent reveal plans they committed?
-            //   plans_revealed / (plans_proposed + ε) measures commit-reveal follow-through.
-            let proposed  = activity.map(|a| a.plans_proposed_count).unwrap_or(0) as f64;
-            let revealed  = activity.map(|a| a.plans_revealed_count).unwrap_or(0) as f64;
-            let votes     = activity.map(|a| a.votes_cast_count).unwrap_or(0) as f64;
-            let reveal_honesty = revealed / (proposed + 1.0);        // ∈ [0,1]
-            let signal_deliberation = (proposed * reveal_honesty + votes) * 0.02;
-
-            // Signal 3: Ecosystem growth — injecting tasks contributes to the swarm.
-            //   Square-root decay: injecting 100 tasks is not 100× better than 10.
-            let injected = activity.map(|a| a.tasks_injected_count).unwrap_or(0) as f64;
-            let signal_injection = injected.sqrt() * 0.05;
-
-            let raw = signal_reliability + signal_deliberation + signal_injection;
-            let reputation_score = (raw * 100.0).round() / 100.0;
-            let can_inject_tasks = id == s.agent_id.to_string() || tasks_processed >= 5;
+            // Use ledger-based score if available, fall back to FIRE formula for backward compat
+            let reputation_score = s.reputation_ledgers.get(&id)
+                .map(|l| l.effective_score() as f64)
+                .unwrap_or_else(|| {
+                    // FIRE formula fallback for agents not yet in ledger
+                    let tasks_done = tasks_processed as f64;
+                    let tasks_got = activity.map(|a| a.tasks_assigned_count).unwrap_or(0) as f64;
+                    let injected = activity.map(|a| a.tasks_injected_count).unwrap_or(0) as f64;
+                    let proposals = activity.map(|a| a.plans_proposed_count).unwrap_or(0) as f64;
+                    let votes = activity.map(|a| a.votes_cast_count).unwrap_or(0) as f64;
+                    let sig_r = tasks_done * (tasks_done / (tasks_got + 1.0)) * 0.10;
+                    let sig_d = (proposals + votes) * 0.02;
+                    let sig_i = injected.sqrt() * 0.05;
+                    ((sig_r + sig_d + sig_i) * 100.0).round() / 100.0
+                });
+            let can_inject = s.can_inject_task(&id, 0.5);
+            let tier = s.reputation_ledgers.get(&id)
+                .map(|l| l.tier().as_str().to_string())
+                .unwrap_or_else(|| {
+                    // legacy tier from agent_tiers if not in ledger
+                    format!("{:?}", s.agent_tiers.get(&id).copied().unwrap_or(Tier::Executor))
+                });
             // The self-agent is always connected — GossipSub doesn't echo messages
             // back to the sender, so seen_secs is unreliable for the local agent.
             let is_self = id == s.agent_id.to_string();
@@ -736,7 +733,7 @@ async fn api_agents(State(web): State<WebState>) -> Json<serde_json::Value> {
             serde_json::json!({
                 "agent_id": id,
                 "name": s.agent_names.get(&id).cloned().unwrap_or_else(|| short_agent_label(&id)),
-                "tier": format!("{:?}", s.agent_tiers.get(&id).copied().unwrap_or(Tier::Executor)),
+                "tier": tier,
                 "seen_secs": seen_secs,
                 "last_task_poll_secs": last_task_poll_secs,
                 "last_result_secs": last_result_secs,
@@ -747,7 +744,7 @@ async fn api_agents(State(web): State<WebState>) -> Json<serde_json::Value> {
                 "votes_cast_count": activity.map(|a| a.votes_cast_count).unwrap_or(0),
                 "tasks_injected_count": activity.map(|a| a.tasks_injected_count).unwrap_or(0),
                 "reputation_score": reputation_score,
-                "can_inject_tasks": can_inject_tasks,
+                "can_inject_tasks": can_inject,
                 "is_self": is_self,
                 "connected": connected,
                 "loop_active": loop_active,
@@ -1144,17 +1141,39 @@ async fn api_network(State(web): State<WebState>) -> Json<serde_json::Value> {
 
 async fn api_reputation(State(web): State<WebState>) -> Json<serde_json::Value> {
     let s = web.state.read().await;
-    let reputation: Vec<serde_json::Value> = s.agent_activity.iter().map(|(id, activity)| {
+    let reputation: Vec<serde_json::Value> = s.reputation_ledgers.iter().map(|(id, ledger)| {
+        let eff = ledger.effective_score();
+        let name = s.agent_names.get(id).cloned().unwrap_or_else(|| id.clone());
         serde_json::json!({
             "agent_id": id,
-            "name": s.agent_names.get(id).cloned().unwrap_or_else(|| short_agent_label(id)),
-            "tasks_assigned": activity.tasks_assigned_count,
-            "tasks_processed": activity.tasks_processed_count,
-            "plans_proposed": activity.plans_proposed_count,
-            "votes_cast": activity.votes_cast_count,
+            "name": name,
+            "effective_score": eff,
+            "raw_score": ledger.raw_score,
+            "peak_score": ledger.peak_score,
+            "tier": ledger.tier().as_str(),
+            "events_count": ledger.events.len(),
+            "last_active": ledger.last_active.to_rfc3339(),
         })
     }).collect();
     Json(serde_json::json!({ "reputation": reputation }))
+}
+
+async fn api_reputation_events(
+    State(web): State<WebState>,
+    axum::extract::Path(did): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    let s = web.state.read().await;
+    let events: Vec<serde_json::Value> = s.reputation_ledgers.get(&did)
+        .map(|l| l.events.iter().rev().take(50).map(|e| serde_json::json!({
+            "event_type": format!("{:?}", e.event_type),
+            "base_points": e.base_points,
+            "effective_points": e.effective_points,
+            "observer": e.observer,
+            "task_id": e.task_id,
+            "timestamp": e.timestamp.to_rfc3339(),
+        })).collect())
+        .unwrap_or_default();
+    Json(serde_json::json!({ "did": did, "events": events }))
 }
 
 async fn api_directory(State(web): State<WebState>) -> Json<serde_json::Value> {
