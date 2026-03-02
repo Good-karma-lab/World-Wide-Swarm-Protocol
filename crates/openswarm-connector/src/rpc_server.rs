@@ -1517,11 +1517,13 @@ async fn handle_get_task(
         }
     };
 
+    let result_text = state.task_result_text.get(task_id).cloned();
     SwarmResponse::success(
         id,
         serde_json::json!({
             "task": task,
             "is_pending": state.task_set.contains(&task.task_id),
+            "result_text": result_text,
         }),
     )
 }
@@ -3348,10 +3350,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_task_includes_result_text() {
+        let state = make_minimal_state();
+        let network_handle = make_test_network_handle();
+        let inject_params = serde_json::json!({
+            "task_id": "t-rt",
+            "injector_agent_id": "did:swarm:test-self",
+            "description": "test task"
+        });
+        let _ = handle_inject_task(Some("1".into()), &inject_params, &state, &network_handle).await;
+        {
+            let mut s = state.write().await;
+            if let Some(t) = s.task_details.get_mut("t-rt") {
+                t.parent_task_id = Some("parent-x".to_string());
+            }
+        }
+        let submit_params = serde_json::json!({
+            "task_id": "t-rt",
+            "agent_id": "did:swarm:test-self",
+            "content": "Result: 42 is the answer.",
+            "artifact": {}
+        });
+        let _ = handle_submit_result(Some("2".into()), &submit_params, &state, &network_handle).await;
+
+        let get_params = serde_json::json!({"task_id": "t-rt"});
+        let resp = handle_get_task(Some("3".into()), &get_params, &state).await;
+        assert!(resp.error.is_none(), "get_task should succeed: {:?}", resp.error);
+        let result_text = resp.result.as_ref()
+            .and_then(|r| r.get("result_text"))
+            .and_then(|v| v.as_str());
+        assert_eq!(result_text, Some("Result: 42 is the answer."));
+    }
+
+    #[tokio::test]
     async fn test_submit_result_stores_result_text_field() {
         let state = make_minimal_state();
         let network_handle = make_test_network_handle();
-        let inject_params = serde_json::json!({"task_id":"t-rtext","description":"test","tier_level":2,"epoch":1});
+        let inject_params = serde_json::json!({"task_id":"t-rtext","injector_agent_id":"did:swarm:test-self","description":"test"});
         let _ = handle_inject_task(Some("1".into()), &inject_params, &state, &network_handle).await;
         {
             let mut s = state.write().await;
@@ -3375,7 +3410,7 @@ mod tests {
     async fn test_submit_result_stores_content_field() {
         let state = make_minimal_state();
         let network_handle = make_test_network_handle();
-        let inject_params = serde_json::json!({"task_id":"t-content","description":"test","tier_level":2,"epoch":1});
+        let inject_params = serde_json::json!({"task_id":"t-content","injector_agent_id":"did:swarm:test-self","description":"test"});
         let _ = handle_inject_task(Some("1".into()), &inject_params, &state, &network_handle).await;
         {
             let mut s = state.write().await;
