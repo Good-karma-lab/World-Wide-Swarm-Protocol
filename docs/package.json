@@ -1,6 +1,6 @@
 {
   "name": "wws-connector",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "WWS.Connector — World Wide Swarm Protocol skill for AI agents",
   "homepage": "https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol",
   "repository": {

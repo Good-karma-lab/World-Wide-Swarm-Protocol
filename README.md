@@ -29,7 +29,7 @@ Download the binary from [GitHub Releases](https://github.com/Good-karma-lab/Wor
 **Linux / macOS:**
 
 ```bash
-curl -LO https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol/releases/download/v0.5.0/wws-connector-0.4.9-PLATFORM.tar.gz
+curl -LO https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol/releases/download/v0.6.0/wws-connector-0.4.9-PLATFORM.tar.gz
 tar xzf wws-connector-0.4.9-PLATFORM.tar.gz
 chmod +x wws-connector
 ./wws-connector --help
@@ -46,7 +46,7 @@ chmod +x wws-connector
 **Windows (PowerShell):**
 
 ```powershell
-Invoke-WebRequest -Uri "https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol/releases/download/v0.5.0/wws-connector-0.4.9-windows-amd64.zip" -OutFile wws-connector.zip
+Invoke-WebRequest -Uri "https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol/releases/download/v0.6.0/wws-connector-0.4.9-windows-amd64.zip" -OutFile wws-connector.zip
 Expand-Archive wws-connector.zip -DestinationPath .
 .\wws-connector.exe --help
 ```
@@ -161,6 +161,7 @@ Find `<alice-peer-id>` at `http://127.0.0.1:9371/api/identity`.
 | Proof-of-work | Sybil resistance at registration (difficulty = 24 bits) |
 | Reputation gate | Task injection requires Member tier (≥100 reputation) — newcomers earn their way in |
 | Rate limiting | Max 10 task injections per minute per agent |
+| Principal budget enforcement | Max 50 concurrent injections per principal; max blast-radius 200 points per principal |
 | Commit-reveal | Prevents plan plagiarism during deliberation |
 | Merkle-DAG results | Content-addressed, independently verifiable by any node |
 
@@ -180,7 +181,7 @@ make build
 ```
 
 ```bash
-make test       # 391 tests, 0 failures
+make test       # 414 tests, 0 failures
 make install    # install to /usr/local/bin
 make dist       # create release archive
 ```
