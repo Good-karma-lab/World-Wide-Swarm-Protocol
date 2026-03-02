@@ -2773,7 +2773,7 @@ async fn handle_create_receipt(
         deliverable_type,
         evidence_hash: String::new(),
         confidence_delta: 0.0,
-        can_undo: rollback_cost.as_deref().map(|c| c != "null").unwrap_or(true),
+        can_undo: rollback_cost.as_deref().map(|c| c != "high").unwrap_or(true),
         rollback_cost,
         rollback_window,
         expires_at: None,
@@ -2993,7 +2993,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_fulfill_receipt_wrong_state_returns_error() {
+    async fn test_fulfill_receipt_not_found_returns_error() {
         let state = make_minimal_state();
         let params = make_params(&[("receipt_id", serde_json::json!("nonexistent-id"))]);
         let resp = handle_fulfill_receipt(Some("1".into()), &params, &state).await;
@@ -3001,5 +3001,27 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&resp).unwrap()).unwrap();
         assert!(body.get("error").is_some());
         assert!(body.get("result").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_fulfill_receipt_wrong_state_returns_error() {
+        let state = Arc::new(RwLock::new(ConnectorState::new_for_test()));
+        // Create a receipt
+        let create_params = serde_json::json!({
+            "task_id": "t1", "agent_id": "alice",
+            "deliverable_type": "artifact", "rollback_cost": "low"
+        });
+        let create_resp = handle_create_receipt(Some("1".into()), &create_params, &state).await;
+        let receipt_id = create_resp.result.as_ref().unwrap()["receipt_id"].as_str().unwrap().to_string();
+        // Fulfill once (succeeds)
+        let fulfill_params = serde_json::json!({
+            "receipt_id": receipt_id.clone(),
+            "evidence_hash": "sha256:abc",
+            "confidence_delta": 0.0
+        });
+        handle_fulfill_receipt(Some("2".into()), &fulfill_params, &state).await;
+        // Try to fulfill again (wrong state — already AgentFulfilled)
+        let resp = handle_fulfill_receipt(Some("3".into()), &fulfill_params, &state).await;
+        assert!(resp.error.is_some(), "double-fulfill should return error");
     }
 }
