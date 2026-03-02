@@ -1243,6 +1243,17 @@ pub(crate) async fn handle_submit_result(
             );
         }
 
+        // Track silent failure rate (Moltbook insight #16)
+        if let Some(outcome_val) = params.get("outcome") {
+            let is_silent = outcome_val.get("FailedSilently").is_some()
+                || outcome_val.as_str() == Some("FailedSilently");
+            let activity = state.agent_activity.entry(submission.agent_id.to_string()).or_default();
+            activity.total_outcomes_reported += 1;
+            if is_silent {
+                activity.silent_failure_count += 1;
+            }
+        }
+
         // Store the result for potential aggregation
         state.task_results.insert(submission.task_id.clone(), submission.artifact.clone());
         let content_text = params
@@ -2245,7 +2256,11 @@ async fn handle_get_board_status(
             "created_at": h.created_at,
         })
     }).collect();
-    SwarmResponse::success(request_id, serde_json::json!({ "holons": holons }))
+    let low_quality_monitors: Vec<String> = state.agent_activity.iter()
+        .filter(|(_, act)| act.silent_failure_rate() > 0.3 && act.total_outcomes_reported >= 3)
+        .map(|(id, _)| id.clone())
+        .collect();
+    SwarmResponse::success(request_id, serde_json::json!({ "holons": holons, "low_quality_monitors": low_quality_monitors }))
 }
 
 /// Handle `swarm.get_deliberation` - returns deliberation messages for a task.
