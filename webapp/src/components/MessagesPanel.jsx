@@ -2,7 +2,13 @@ function scrubId(s) {
   return String(s || '').replace(/did:swarm:[A-Za-z0-9_-]+/g, m => m.slice(-8))
 }
 
-export default function MessagesPanel({ conversations }) {
+function resolveName(did, agents) {
+  if (!did) return '?'
+  const agent = (agents || []).find(a => a.agent_id === did)
+  return agent?.name || scrubId(did)
+}
+
+export default function MessagesPanel({ conversations, agents }) {
   if (!conversations || !conversations.length) {
     return (
       <div style={{ padding: 16, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
@@ -42,11 +48,11 @@ export default function MessagesPanel({ conversations }) {
                   {sent ? 'sent' : 'received'}
                 </span>
                 <span style={{ color: sent ? '#ffaa00' : 'var(--teal)' }}>
-                  {scrubId(c.from)}
+                  {resolveName(c.from, agents)}
                 </span>
                 <span style={{ color: 'var(--text-muted)' }}>→</span>
                 <span style={{ color: 'var(--text)' }}>
-                  {scrubId(c.to)}
+                  {resolveName(c.to, agents)}
                 </span>
               </div>
               <div style={{ color: 'var(--text)', whiteSpace: 'pre-wrap', lineHeight: 1.5, wordBreak: 'break-word' }}>

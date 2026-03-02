@@ -1757,6 +1757,21 @@ async fn handle_register_agent(
         )
     };
 
+    // Persist the agent's chosen display name to disk so it survives restarts.
+    if !requested_agent_id.starts_with("did:swarm:") {
+        let (name_file, current_name) = {
+            let s = state.read().await;
+            (s.name_file_path.clone(), s.agent_names.get(&canonical_agent_id).cloned())
+        };
+        if let (Some(path), Some(name)) = (name_file, current_name) {
+            if let Err(e) = tokio::fs::write(&path, &name).await {
+                tracing::warn!(error = %e, "Failed to persist agent display name");
+            } else {
+                tracing::info!(path = %path.display(), name = %name, "Agent display name persisted");
+            }
+        }
+    }
+
     // Publish keepalive
     let keepalive = KeepAliveParams {
         agent_id: AgentId::new(canonical_agent_id.clone()),

@@ -215,7 +215,7 @@ export default function App() {
 
       {panel?.type === 'messages' && (
         <SlidePanel title="P2P Messages" onClose={closePanel}>
-          <MessagesPanel conversations={conversations} />
+          <MessagesPanel conversations={conversations} agents={agents?.agents || []} />
         </SlidePanel>
       )}
 

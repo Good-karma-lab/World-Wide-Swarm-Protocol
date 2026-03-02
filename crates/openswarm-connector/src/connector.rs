@@ -298,6 +298,8 @@ pub struct ConnectorState {
     pub receipts: std::collections::HashMap<String, openswarm_protocol::CommitmentReceipt>,
     /// Clarification requests by clarification_id (Moltbook insight #20).
     pub clarifications: std::collections::HashMap<String, openswarm_protocol::ClarificationRequest>,
+    /// Path to persist the agent's chosen display name across restarts.
+    pub name_file_path: Option<std::path::PathBuf>,
 }
 
 impl ConnectorState {
@@ -786,6 +788,7 @@ impl OpenSwarmConnector {
             guardian_votes: std::collections::HashMap::new(),
             receipts: std::collections::HashMap::new(),
             clarifications: std::collections::HashMap::new(),
+            name_file_path: None,
         };
 
         Ok(Self {
@@ -3339,6 +3342,7 @@ impl ConnectorState {
             guardian_votes: std::collections::HashMap::new(),
             receipts: std::collections::HashMap::new(),
             clarifications: std::collections::HashMap::new(),
+            name_file_path: None,
         }
     }
 }

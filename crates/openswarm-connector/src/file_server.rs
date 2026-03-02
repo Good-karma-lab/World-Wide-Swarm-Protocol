@@ -52,10 +52,15 @@ struct WebState {
     state: Arc<RwLock<ConnectorState>>,
     network_handle: openswarm_network::SwarmHandle,
     web_root: PathBuf,
+    /// Actual RPC bind address (e.g. "127.0.0.1:9370"), used for SKILL.md substitution.
+    rpc_addr: String,
+    /// Actual HTTP bind address (e.g. "127.0.0.1:9371"), used for SKILL.md substitution.
+    http_addr: String,
 }
 
 pub struct FileServer {
     bind_addr: String,
+    rpc_addr: String,
     state: Arc<RwLock<ConnectorState>>,
     network_handle: openswarm_network::SwarmHandle,
     web_root: PathBuf,
@@ -64,11 +69,13 @@ pub struct FileServer {
 impl FileServer {
     pub fn new(
         bind_addr: String,
+        rpc_addr: String,
         state: Arc<RwLock<ConnectorState>>,
         network_handle: openswarm_network::SwarmHandle,
     ) -> Self {
         Self {
             bind_addr,
+            rpc_addr,
             state,
             network_handle,
             web_root: detect_web_root(),
@@ -82,6 +89,8 @@ impl FileServer {
             state: self.state,
             network_handle: self.network_handle,
             web_root: web_root.clone(),
+            rpc_addr: self.rpc_addr,
+            http_addr: self.bind_addr.clone(),
         };
 
         // Serve static assets from /assets/* directly; everything else falls
@@ -191,8 +200,15 @@ async fn spa_index(State(web): State<WebState>) -> impl IntoResponse {
     }
 }
 
-async fn skill_md() -> impl IntoResponse {
-    ([("content-type", "text/markdown; charset=utf-8")], DOCS.skill_md)
+async fn skill_md(State(ws): State<WebState>) -> impl IntoResponse {
+    // Substitute the default placeholder ports with the actual configured addresses.
+    // The embedded template always contains "127.0.0.1:9370" (RPC) and "127.0.0.1:9371" (HTTP).
+    let content = DOCS.skill_md
+        .replace("tcp://127.0.0.1:9370", &format!("tcp://{}", ws.rpc_addr))
+        .replace("http://127.0.0.1:9371", &format!("http://{}", ws.http_addr))
+        .replace("127.0.0.1:9370", &ws.rpc_addr)
+        .replace("127.0.0.1:9371", &ws.http_addr);
+    ([("content-type", "text/markdown; charset=utf-8")], content)
 }
 
 async fn heartbeat_md() -> impl IntoResponse {

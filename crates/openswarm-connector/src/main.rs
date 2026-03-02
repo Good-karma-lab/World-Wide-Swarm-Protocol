@@ -183,11 +183,25 @@ async fn main() -> anyhow::Result<()> {
     let _signing_key = openswarm_connector::identity_store::load_or_generate_key(&key_path)?;
     tracing::info!(key_path = %key_path.display(), "Identity key loaded");
 
+    // Load persisted agent display name (set by swarm.register_agent).
+    let name_file_path = key_path.with_extension("name");
+    if name_file_path.exists() {
+        if let Ok(saved) = std::fs::read_to_string(&name_file_path) {
+            let saved = saved.trim().to_string();
+            if !saved.is_empty() {
+                tracing::info!(name = %saved, "Loaded persisted agent display name");
+                config.agent.name = saved;
+            }
+        }
+    }
+
     // Create the connector.
     let connector = OpenSwarmConnector::new(config.clone())?;
 
     // Get handles for the RPC server.
     let state = connector.shared_state();
+    // Store the name file path so RPC can persist agent names on registration.
+    state.write().await.name_file_path = Some(name_file_path);
     let network_handle = connector.network_handle();
 
     // Start the RPC server in a background task.
@@ -208,6 +222,7 @@ async fn main() -> anyhow::Result<()> {
     if config.file_server.enabled {
         let file_server = FileServer::new(
             config.file_server.bind_addr.clone(),
+            config.rpc.bind_addr.clone(),
             state.clone(),
             connector.network_handle(),
         );

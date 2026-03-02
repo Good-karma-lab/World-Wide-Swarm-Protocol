@@ -1378,6 +1378,7 @@ mod tests {
             guardian_votes: std::collections::HashMap::new(),
             receipts: std::collections::HashMap::new(),
             clarifications: std::collections::HashMap::new(),
+            name_file_path: None,
         };
 
         state.mark_member_seen("did:swarm:agent-1");
@@ -1464,6 +1465,7 @@ mod tests {
             guardian_votes: std::collections::HashMap::new(),
             receipts: std::collections::HashMap::new(),
             clarifications: std::collections::HashMap::new(),
+            name_file_path: None,
         };
 
         state.push_task_timeline_event("t1", "injected", "", None);
@@ -1613,6 +1615,7 @@ mod tests {
             guardian_votes: std::collections::HashMap::new(),
             receipts: std::collections::HashMap::new(),
             clarifications: std::collections::HashMap::new(),
+            name_file_path: None,
         };
 
         let mut console = OperatorConsole::new(Arc::new(RwLock::new(state)), handle_a.clone());
