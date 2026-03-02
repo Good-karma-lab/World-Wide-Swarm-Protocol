@@ -26,6 +26,7 @@ use openswarm_protocol::*;
 use openswarm_state::{ContentStore, GranularityAlgorithm, MerkleDag, OrSet};
 
 use crate::config::ConnectorConfig;
+use crate::reputation::{RepEvent, RepEventType, ReputationLedger, observer_weighted_points};
 use crate::tui::{LogCategory, LogEntry};
 
 const ACTIVE_MEMBER_STALENESS_SECS: u64 = 45;
@@ -210,6 +211,10 @@ pub struct ConnectorState {
     pub inbox: Vec<InboxMessage>,
     /// Per-agent last inject timestamps for rate limiting (max 10 per 60s).
     pub inject_rate_limiter: std::collections::HashMap<String, Vec<chrono::DateTime<chrono::Utc>>>,
+    /// Per-agent reputation ledgers (event log + scores).
+    pub reputation_ledgers: std::collections::HashMap<String, ReputationLedger>,
+    /// Rate limiting for reputation event submission: agent_id -> timestamps of recent events.
+    pub rep_event_rate_limiter: std::collections::HashMap<String, Vec<chrono::DateTime<chrono::Utc>>>,
 }
 
 /// Minimum tasks an agent must have completed to inject tasks into the swarm.
@@ -219,13 +224,8 @@ impl ConnectorState {
     /// Returns true if the given agent_id has sufficient reputation to inject tasks.
     /// The local agent (self) is always allowed.
     pub fn has_inject_reputation(&self, agent_id: &str) -> bool {
-        if self.agent_id.to_string() == agent_id {
-            return true;
-        }
-        self.agent_activity
-            .get(agent_id)
-            .map(|a| a.tasks_processed_count >= MIN_INJECT_TASKS_COMPLETED)
-            .unwrap_or(false)
+        // Delegates to can_inject_task with simple task complexity threshold
+        self.can_inject_task(agent_id, 0.5)
     }
 
     /// Check and update rate limit for task injection.
@@ -238,6 +238,79 @@ impl ConnectorState {
             .entry(agent_id.to_string())
             .or_insert_with(Vec::new);
         // Remove timestamps older than the window
+        timestamps.retain(|&t| now - t < window);
+        if timestamps.len() >= max_per_window {
+            return false;
+        }
+        timestamps.push(now);
+        true
+    }
+
+    /// Get or create the reputation ledger for an agent.
+    pub fn ledger_mut(&mut self, agent_id: &str) -> &mut ReputationLedger {
+        self.reputation_ledgers
+            .entry(agent_id.to_string())
+            .or_default()
+    }
+
+    /// Apply an objective or observer-weighted reputation event to an agent.
+    pub fn apply_rep_event(
+        &mut self,
+        agent_id: &str,
+        event_type: RepEventType,
+        task_id: Option<String>,
+    ) {
+        let base = event_type.base_points();
+        let is_obj = event_type.is_objective();
+        // Capture agent_id as String before any mutable borrows
+        let my_id = self.agent_id.to_string();
+        let observer_score = self
+            .reputation_ledgers
+            .get(&my_id)
+            .map(|l| l.effective_score())
+            .unwrap_or(0);
+        let effective = observer_weighted_points(base, observer_score, is_obj);
+        let event = RepEvent {
+            event_type,
+            base_points: base,
+            observer: my_id,
+            observer_score,
+            effective_points: effective,
+            task_id,
+            timestamp: chrono::Utc::now(),
+            evidence: None,
+        };
+        self.reputation_ledgers
+            .entry(agent_id.to_string())
+            .or_default()
+            .apply_event(event);
+    }
+
+    /// Check whether an agent can inject a task of the given complexity.
+    ///
+    /// Self (local connector) is always allowed. Others must meet tier requirements.
+    pub fn can_inject_task(&self, agent_id: &str, complexity: f64) -> bool {
+        if self.agent_id.to_string() == agent_id {
+            return true;
+        }
+        let score = self
+            .reputation_ledgers
+            .get(agent_id)
+            .map(|l| l.effective_score())
+            .unwrap_or(0);
+        let min_score = crate::reputation::ScoreTier::min_inject_score(complexity);
+        score >= min_score
+    }
+
+    /// Check the reputation event submission rate limit (max 20 per agent per hour).
+    pub fn check_rep_event_rate_limit(&mut self, agent_id: &str) -> bool {
+        let now = chrono::Utc::now();
+        let window = chrono::Duration::hours(1);
+        let max_per_window: usize = 20;
+        let timestamps = self
+            .rep_event_rate_limiter
+            .entry(agent_id.to_string())
+            .or_insert_with(Vec::new);
         timestamps.retain(|&t| now - t < window);
         if timestamps.len() >= max_per_window {
             return false;
@@ -322,6 +395,7 @@ impl ConnectorState {
 
     pub fn bump_tasks_processed(&mut self, agent_id: &str) {
         self.activity_mut(agent_id).tasks_processed_count += 1;
+        self.apply_rep_event(agent_id, RepEventType::TaskExecutedVerified, None);
     }
 
     pub fn bump_plans_proposed(&mut self, agent_id: &str) {
@@ -334,6 +408,7 @@ impl ConnectorState {
 
     pub fn bump_votes_cast(&mut self, agent_id: &str) {
         self.activity_mut(agent_id).votes_cast_count += 1;
+        self.apply_rep_event(agent_id, RepEventType::VoteCastInIrv, None);
     }
 
     pub fn active_member_ids(&self, max_staleness: Duration) -> Vec<String> {
@@ -536,6 +611,8 @@ impl OpenSwarmConnector {
             name_registry: std::collections::HashMap::new(),
             inbox: Vec::new(),
             inject_rate_limiter: std::collections::HashMap::new(),
+            reputation_ledgers: std::collections::HashMap::new(),
+            rep_event_rate_limiter: std::collections::HashMap::new(),
         };
 
         Ok(Self {
@@ -3076,6 +3153,8 @@ impl ConnectorState {
             name_registry: std::collections::HashMap::new(),
             inbox: Vec::new(),
             inject_rate_limiter: std::collections::HashMap::new(),
+            reputation_ledgers: std::collections::HashMap::new(),
+            rep_event_rate_limiter: std::collections::HashMap::new(),
         }
     }
 }
@@ -3234,10 +3313,11 @@ mod tests {
     fn test_has_inject_reputation_agent_with_completed_task() {
         let mut state = ConnectorState::new_for_test();
         let agent_id = "did:swarm:test-agent-001".to_string();
-        state.agent_activity.insert(agent_id.clone(), AgentActivity {
-            tasks_processed_count: 5,
-            ..Default::default()
-        });
+        // Build up enough reputation score (>= 100) via TaskExecutedVerified events (+10 each).
+        // Need at least 10 events to reach score >= 100.
+        for _ in 0..10 {
+            state.bump_tasks_processed(&agent_id);
+        }
         assert!(state.has_inject_reputation(&agent_id));
     }
 
@@ -3245,10 +3325,7 @@ mod tests {
     fn test_has_inject_reputation_agent_with_no_completed_tasks() {
         let mut state = ConnectorState::new_for_test();
         let agent_id = "did:swarm:test-agent-002".to_string();
-        state.agent_activity.insert(agent_id.clone(), AgentActivity {
-            tasks_processed_count: 0,
-            ..Default::default()
-        });
+        // No events applied — ledger score is 0, below the 100 threshold for simple tasks.
         assert!(!state.has_inject_reputation(&agent_id));
     }
 

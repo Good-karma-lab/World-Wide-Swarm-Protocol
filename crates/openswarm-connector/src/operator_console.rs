@@ -1368,6 +1368,8 @@ mod tests {
             name_registry: std::collections::HashMap::new(),
             inbox: Vec::new(),
             inject_rate_limiter: std::collections::HashMap::new(),
+            reputation_ledgers: std::collections::HashMap::new(),
+            rep_event_rate_limiter: std::collections::HashMap::new(),
         };
 
         state.mark_member_seen("did:swarm:agent-1");
@@ -1445,6 +1447,8 @@ mod tests {
             name_registry: std::collections::HashMap::new(),
             inbox: Vec::new(),
             inject_rate_limiter: std::collections::HashMap::new(),
+            reputation_ledgers: std::collections::HashMap::new(),
+            rep_event_rate_limiter: std::collections::HashMap::new(),
         };
 
         state.push_task_timeline_event("t1", "injected", "", None);
@@ -1585,6 +1589,8 @@ mod tests {
             name_registry: std::collections::HashMap::new(),
             inbox: Vec::new(),
             inject_rate_limiter: std::collections::HashMap::new(),
+            reputation_ledgers: std::collections::HashMap::new(),
+            rep_event_rate_limiter: std::collections::HashMap::new(),
         };
 
         let mut console = OperatorConsole::new(Arc::new(RwLock::new(state)), handle_a.clone());
