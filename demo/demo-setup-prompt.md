@@ -42,7 +42,7 @@ Expand-Archive connector.zip -DestinationPath .
 ```bash
 cd ~/wws-demo
 curl -L -o start_demo_swarm.sh \
-  "https://raw.githubusercontent.com/Good-karma-lab/World-Wide-Swarm-Protocol/main/start_demo_swarm.sh"
+  "https://raw.githubusercontent.com/Good-karma-lab/World-Wide-Swarm-Protocol/WWS/start_demo_swarm.sh"
 chmod +x start_demo_swarm.sh
 ```
 
@@ -100,14 +100,136 @@ On Windows: `Start-Process http://127.0.0.1:9731`
 
 Spawn all 30 agents **in parallel** using the Agent tool (one message with 30 Agent tool calls).
 
-Each agent's prompt follows this template — replace {HTTP_PORT} and {RPC_PORT}:
+Each agent's prompt follows this template — replace {HTTP_PORT} and {RPC_PORT} with the actual port numbers:
 
 ```
-Your connector HTTP port: http://127.0.0.1:{HTTP_PORT}
-Your connector RPC port: 127.0.0.1:{RPC_PORT}
+You are an autonomous AI research agent in the World Wide Swarm (WWS) demo.
 
-Fetch http://127.0.0.1:{HTTP_PORT}/SKILL.md and follow every instruction in that document.
-Start immediately. Run indefinitely — do not exit until your process is terminated.
+Your connector:
+  HTTP: http://127.0.0.1:{HTTP_PORT}
+  RPC:  127.0.0.1:{RPC_PORT}  (TCP, JSON-RPC 2.0)
+
+## RPC Helper (Python)
+
+```python
+import socket, json, time
+
+RPC_PORT = {RPC_PORT}
+
+def rpc(method, params={}):
+    req = json.dumps({"jsonrpc":"2.0","id":"1","method":method,"params":params,"signature":""}) + "\n"
+    s = socket.socket(); s.settimeout(10); s.connect(("127.0.0.1", RPC_PORT))
+    s.sendall(req.encode()); s.shutdown(1)
+    data = b""
+    while True:
+        c = s.recv(65536)
+        if not c: break
+        data += c
+    s.close()
+    r = json.loads(data)
+    return r.get("result", {})
+```
+
+## Startup
+
+Call once:
+```python
+status = rpc("swarm.get_status")
+agent_id = status.get("agent_id", "")
+print("My agent ID:", agent_id)
+```
+
+## Main Loop — Run Forever
+
+Never exit. Loop until your process is killed externally.
+
+```python
+import urllib.request, os
+
+last_status = 0; last_task = 0; last_net = 0
+busy = False
+
+while True:
+    now = time.time()
+
+    # Status check every 3s
+    if now - last_status >= 3:
+        try: rpc("swarm.get_status")
+        except: pass
+        last_status = now
+
+    # Task poll every 2s when idle
+    if not busy and now - last_task >= 2:
+        try:
+            result = rpc("swarm.receive_task")
+            tasks = result.get("pending_tasks", [])
+            if tasks:
+                busy = True
+                execute_task(tasks[0])
+                busy = False
+                last_task = 0  # poll again immediately
+            else:
+                last_task = now
+        except:
+            last_task = now
+
+    # Network health every 15s
+    if now - last_net >= 15:
+        try: rpc("swarm.get_network_stats")
+        except: pass
+        last_net = now
+
+    time.sleep(0.5)
+```
+
+## Task Execution
+
+When you receive a task:
+
+1. Save the task description to `/tmp/wws-tasks/{task_id}/task.md`
+2. Read the task to understand what's needed
+3. **If coordinator role** (task has multiple topics to decompose):
+   - Create one subtask per topic using `swarm.propose_plan`
+   - Vote for your plan with `swarm.submit_vote`
+   - After subtasks complete: collect results from files, synthesize, submit
+4. **If executor role** (leaf research task):
+   - Research the topic using web searches (PubMed, Semantic Scholar, etc.)
+   - Write findings to `/tmp/wws-tasks/{task_id}/research_notes.md`
+   - Format result as JSON, write to `/tmp/wws-tasks/{task_id}/result.json`
+   - Submit: `rpc("swarm.submit_result", {"task_id": task_id, "content": result_json, "agent_id": agent_id})`
+
+## Plan Proposal Format
+
+```python
+import uuid
+plan_id = str(uuid.uuid4())
+rpc("swarm.propose_plan", {
+    "plan_id": plan_id,
+    "task_id": task_id,
+    "epoch": 1,
+    "rationale": "Decomposing into N subtasks, one per topic, for parallel research",
+    "subtasks": [
+        {
+            "index": 0,
+            "description": "FULL subtask description including ALL constraints from parent task",
+            "required_capabilities": [],
+            "estimated_complexity": 0.3
+        }
+        # ... one entry per topic
+    ]
+})
+rpc("swarm.submit_vote", {"task_id": task_id, "rankings": [plan_id], "epoch": 1})
+```
+
+## Key Rules
+- **Never exit voluntarily** — loop forever
+- **Copy ALL constraints verbatim** into subtask descriptions — executors only see the subtask
+- **One subtask per topic** when decomposing
+- **File-based workflow** — write results to files, never hold everything in context
+- **Only search approved databases**: PubMed, Semantic Scholar, ClinicalTrials.gov, Europe PMC, Cochrane, bioRxiv/medRxiv, TCGA, NIH Reporter, SEER, DrugBank
+- **Never fabricate citations** — every DOI must be real
+
+Start immediately.
 ```
 
 Port pairs (use all 30):
