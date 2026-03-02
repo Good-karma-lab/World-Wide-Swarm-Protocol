@@ -17,9 +17,58 @@ function scrubId(s) {
   return String(s || '').replace(/did:swarm:[A-Za-z0-9]+/g, m => '[' + m.slice(-6) + ']')
 }
 
+/**
+ * Build a depth-annotated task list so root tasks come first,
+ * followed by their subtasks (indented), then sub-subtasks, etc.
+ * Tasks whose parent isn't in the list are placed at depth 1.
+ */
+function buildTaskTree(taskList) {
+  const byParent = {}
+  const rootIds = []
+
+  taskList.forEach(t => {
+    if (!t.parent_task_id) {
+      rootIds.push(t.task_id)
+    } else {
+      if (!byParent[t.parent_task_id]) byParent[t.parent_task_id] = []
+      byParent[t.parent_task_id].push(t.task_id)
+    }
+  })
+
+  const byId = {}
+  taskList.forEach(t => { byId[t.task_id] = t })
+
+  const result = []
+  const visited = new Set()
+
+  function flatten(id, depth) {
+    if (visited.has(id)) return
+    visited.add(id)
+    const task = byId[id]
+    if (!task) return
+    result.push({ ...task, _depth: depth })
+    for (const childId of (byParent[id] || [])) {
+      flatten(childId, depth + 1)
+    }
+  }
+
+  // Process roots sorted newest first
+  rootIds.forEach(id => flatten(id, 0))
+
+  // Any orphans (parent not in list)
+  taskList.forEach(t => {
+    if (!visited.has(t.task_id)) {
+      result.push({ ...t, _depth: 1 })
+    }
+  })
+
+  return result
+}
+
 export default function BottomTray({ agents, tasks, onTaskClick, onAgentClick }) {
   const agentList = agents?.agents || []
   const taskList = tasks?.tasks || []
+  const taskTree = buildTaskTree(taskList)
 
   const red    = agentList.filter(a => !a.connected).length
   const yellow = agentList.filter(a => a.connected && !a.loop_active).length
@@ -56,15 +105,27 @@ export default function BottomTray({ agents, tasks, onTaskClick, onAgentClick })
       <div className="tray-col">
         <div className="tray-label">Tasks</div>
         <div className="tray-scroll">
-          {taskList.length === 0 && (
+          {taskTree.length === 0 && (
             <div style={{ color: 'var(--text-dim)', fontSize: 11, fontFamily: 'var(--font-mono)' }}>
               No tasks yet
             </div>
           )}
-          {taskList.slice(0, 20).map(t => (
-            <div key={t.task_id} className="task-item" onClick={() => onTaskClick(t)}>
+          {taskTree.slice(0, 30).map(t => (
+            <div
+              key={t.task_id}
+              className="task-item"
+              style={t._depth > 0 ? {
+                marginLeft: Math.min(t._depth, 3) * 12,
+                paddingLeft: 6,
+                borderLeft: '2px solid var(--border)',
+                opacity: 0.9,
+              } : {}}
+              onClick={() => onTaskClick(t)}
+            >
               <span className="task-status-dot" style={{ background: taskStatusColor(t.status) }} />
-              <span className="task-id">{t.task_id.slice(0, 8)}…</span>
+              <span className="task-id" style={{ fontFamily: 'var(--font-mono)', fontSize: 10 }}>
+                {t._depth > 0 ? '↳ ' : ''}{t.task_id.slice(0, 8)}…
+              </span>
               <span className="task-desc">{t.description || t.task_id}</span>
               <span style={{ fontSize: 10, color: 'var(--text-muted)', flexShrink: 0 }}>{t.status}</span>
             </div>
