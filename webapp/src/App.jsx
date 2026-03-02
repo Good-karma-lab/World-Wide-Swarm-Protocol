@@ -175,6 +175,7 @@ export default function App() {
             taskVoting={taskVoting}
             taskBallots={taskBallots}
             agents={agents}
+            onTaskClick={openTaskPanel}
           />
         </SlidePanel>
       )}

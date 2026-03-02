@@ -283,7 +283,7 @@ function DeliberationTab({ taskId, agents }) {
 }
 
 // ── Overview tab ──────────────────────────
-function OverviewTab({ taskTrace, agents }) {
+function OverviewTab({ taskTrace, agents, onTaskClick }) {
   const dagRef = useRef(null)
   const dagNet = useRef(null)
   const [index, setIndex] = useState(0)
@@ -339,6 +339,11 @@ function OverviewTab({ taskTrace, agents }) {
         nodes: { margin: 8 },
       }
     )
+    dagNet.current.on('click', function(params) {
+      if (params.nodes.length > 0 && onTaskClick) {
+        onTaskClick({ task_id: params.nodes[0] })
+      }
+    })
     return () => { if (dagNet.current) dagNet.current.destroy() }
   }, [taskTrace])
 
@@ -406,7 +411,11 @@ function OverviewTab({ taskTrace, agents }) {
             </thead>
             <tbody>
               {descendants.map(t => (
-                <tr key={t.task_id}>
+                <tr
+                  key={t.task_id}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => onTaskClick && onTaskClick({ task_id: t.task_id })}
+                >
                   <td>{t.task_id.slice(0, 10)}…</td>
                   <td>{t.status}</td>
                   <td>{scrubId(t.assigned_to_name || 'unassigned')}</td>
@@ -459,8 +468,92 @@ function OverviewTab({ taskTrace, agents }) {
   )
 }
 
+// ── Result tab ────────────────────────────
+function ResultTab({ taskTrace, agents }) {
+  const agentsList = agents?.agents || []
+  const task = taskTrace?.task
+  const resultText = taskTrace?.result_text
+  const subtasksWithResults = (taskTrace?.descendants || []).filter(d => d.result_text)
+
+  if (!resultText && !subtasksWithResults.length) {
+    return (
+      <div style={{ color: 'var(--text-muted)', fontSize: 12, padding: '8px 0' }}>
+        No result yet.
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      {resultText && (
+        <div className="detail-section">
+          <div className="detail-section-title">
+            Final Result
+            {task?.assigned_to_name && (
+              <span style={{ fontWeight: 400, color: 'var(--teal)', marginLeft: 8, fontSize: 11 }}>
+                by {task.assigned_to_name}
+              </span>
+            )}
+          </div>
+          <div style={{
+            background: 'var(--surface-2)',
+            border: '1px solid var(--border)',
+            borderRadius: 6,
+            padding: '12px 16px',
+            fontSize: 13,
+            color: 'var(--text)',
+            lineHeight: 1.6,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}>
+            {resultText}
+          </div>
+        </div>
+      )}
+
+      {subtasksWithResults.length > 0 && (
+        <div className="detail-section">
+          <div className="detail-section-title">Subtask Results ({subtasksWithResults.length})</div>
+          {subtasksWithResults.map(d => (
+            <div key={d.task_id} style={{
+              background: 'var(--surface-2)',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              padding: '10px 14px',
+              marginBottom: 10,
+            }}>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' }}>
+                  {d.task_id.slice(0, 12)}…
+                </span>
+                <span style={{ fontSize: 11, color: 'var(--text)' }}>{d.description}</span>
+                {d.assigned_to_name && (
+                  <span style={{ fontSize: 10, color: 'var(--teal)', marginLeft: 'auto' }}>
+                    {d.assigned_to_name}
+                  </span>
+                )}
+              </div>
+              <div style={{
+                fontSize: 12,
+                color: 'var(--text)',
+                lineHeight: 1.5,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                borderLeft: '2px solid var(--border)',
+                paddingLeft: 10,
+              }}>
+                {d.result_text}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main export ───────────────────────────
-export default function TaskDetailPanel({ taskId, taskTrace, taskVoting, taskBallots, agents }) {
+export default function TaskDetailPanel({ taskId, taskTrace, taskVoting, taskBallots, agents, onTaskClick }) {
   const [activeTab, setActiveTab] = useState('overview')
 
   return (
@@ -472,7 +565,7 @@ export default function TaskDetailPanel({ taskId, taskTrace, taskVoting, taskBal
 
       {/* Inline tabs */}
       <div style={{ display: 'flex', gap: 2, borderBottom: '1px solid var(--border)', marginBottom: 16, marginLeft: -20, marginRight: -20, paddingLeft: 20 }}>
-        {['overview', 'voting', 'deliberation'].map(tab => (
+        {['overview', 'result', 'voting', 'deliberation'].map(tab => (
           <button
             key={tab}
             className={`panel-tab${activeTab === tab ? ' active' : ''}`}
@@ -484,7 +577,10 @@ export default function TaskDetailPanel({ taskId, taskTrace, taskVoting, taskBal
       </div>
 
       {activeTab === 'overview' && (
-        <OverviewTab taskTrace={taskTrace} agents={agents} />
+        <OverviewTab taskTrace={taskTrace} agents={agents} onTaskClick={onTaskClick} />
+      )}
+      {activeTab === 'result' && (
+        <ResultTab taskTrace={taskTrace} agents={agents} />
       )}
       {activeTab === 'voting' && (
         <VotingTab taskVoting={taskVoting} taskBallots={taskBallots} agents={agents} />
