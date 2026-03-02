@@ -19,8 +19,8 @@ x-node-base: &node-base
 services:
   wws-node-1:
     <<: *node-base
-    ports: ["9370:9370", "9371:9371"]
-    command: ["--agent-name", "turing", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371"]
+    ports: ["9370:9370", "9371:9371", "9900:9900"]
+    command: ["--agent-name", "turing", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371", "--listen", "/ip4/0.0.0.0/tcp/9900"]
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:9371/api/health || exit 1"]
       interval: 5s
