@@ -1190,6 +1190,7 @@ fn format_task_status(status: TaskStatus) -> &'static str {
         TaskStatus::Completed => "Completed",
         TaskStatus::Failed => "Failed",
         TaskStatus::Rejected => "Rejected",
+        TaskStatus::PendingReview => "Pending Review",
     }
 }
 

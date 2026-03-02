@@ -46,6 +46,41 @@ pub enum TaskStatus {
     Failed,
     /// Task was rejected during verification
     Rejected,
+    /// Task result submitted but confidence delta exceeded review threshold.
+    PendingReview,
+}
+
+fn default_confidence_review_threshold() -> f32 {
+    1.0
+}
+
+/// Tri-state of a spec-anchored deliverable (Moltbook insight #13).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DeliverableState {
+    Done,
+    Partial { note: String },
+    Skipped,
+}
+
+/// A single named deliverable item in a task spec (Moltbook insight #13).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Deliverable {
+    pub id: String,
+    pub description: String,
+    pub state: DeliverableState,
+}
+
+/// A clarification request from an agent to a task principal (Moltbook insight #20).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClarificationRequest {
+    pub id: String,
+    pub task_id: String,
+    pub requesting_agent: String,
+    pub principal_id: String,
+    pub question: String,
+    pub resolution: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub resolved_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// A task in the swarm hierarchy.
@@ -73,6 +108,15 @@ pub struct Task {
     pub knowledge_domains: Vec<String>,
     #[serde(default)]
     pub tools_available: Vec<String>,
+    /// Spec-anchored deliverable checklist (Moltbook insight #13).
+    #[serde(default)]
+    pub deliverables: Vec<Deliverable>,
+    /// Minimum coverage fraction for SucceededPartially to be accepted (0.0 = any, 1.0 = full).
+    #[serde(default)]
+    pub coverage_threshold: f32,
+    /// Confidence delta gate: if pre−post > threshold, task moves to PendingReview.
+    #[serde(default = "default_confidence_review_threshold")]
+    pub confidence_review_threshold: f32,
 }
 
 impl Task {
@@ -94,6 +138,9 @@ impl Task {
             backtrack_allowed: false,
             knowledge_domains: Vec::new(),
             tools_available: Vec::new(),
+            deliverables: Vec::new(),
+            coverage_threshold: 0.0,
+            confidence_review_threshold: 1.0,
         }
     }
 }
@@ -377,6 +424,15 @@ impl SwarmInfo {
     }
 }
 
+/// A constraint conflict with provenance (Moltbook insights #2, #15).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstraintConflict {
+    pub constraint_a: String,
+    pub introduced_by_a: String,
+    pub constraint_b: String,
+    pub introduced_by_b: String,
+}
+
 /// Structured task outcome (Moltbook insight #2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TaskOutcome {
@@ -390,11 +446,11 @@ pub enum TaskOutcome {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FailureReason {
     MissingCapabilities { required: Vec<String>, had: Vec<String> },
-    ContradictoryConstraints { conflict_description: String },
+    ContradictoryConstraints { conflict_graph: Vec<ConstraintConflict> },
     InsufficientContext { missing_keys: Vec<String> },
     ResourceExhausted { resource: String },
     ExternalDependencyFailed { dependency: String },
-    TaskAmbiguous { ambiguity_description: String },
+    TaskAmbiguous { ambiguity_description: String, proposed_resolution: Option<String> },
 }
 
 /// Commitment receipt with rich reversibility info (Moltbook insight #1).
@@ -418,10 +474,18 @@ pub struct CommitmentReceipt {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CommitmentState {
     Active,
-    Fulfilled,
+    /// Agent reports completion, awaiting external verification (Moltbook insight #14).
+    AgentFulfilled,
+    /// External verifier confirmed evidence_hash (Moltbook insight #14).
+    Verified,
+    /// Finalized, calibration updated (Moltbook insight #14).
+    Closed,
     Expired,
     Failed,
     Disputed,
+    /// Legacy alias for backward-compat deserialisation.
+    #[serde(alias = "Fulfilled")]
+    Fulfilled,
 }
 
 // ── Holonic Swarm Types ──
@@ -931,6 +995,102 @@ mod tests {
         assert!(!task.backtrack_allowed);
         assert!(task.knowledge_domains.is_empty());
         assert!(task.tools_available.is_empty());
+    }
+
+    #[test]
+    fn test_deliverable_tri_state_serialises() {
+        let d = Deliverable {
+            id: "d1".into(),
+            description: "Write tests".into(),
+            state: DeliverableState::Partial { note: "half done".into() },
+        };
+        let json = serde_json::to_string(&d).unwrap();
+        let back: Deliverable = serde_json::from_str(&json).unwrap();
+        match back.state {
+            DeliverableState::Partial { note } => assert_eq!(note, "half done"),
+            _ => panic!("wrong state"),
+        }
+    }
+
+    #[test]
+    fn test_task_with_deliverables_defaults() {
+        let t = Task::new("x".into(), 1, 0);
+        assert!(t.deliverables.is_empty());
+        assert_eq!(t.coverage_threshold, 0.0);
+        assert_eq!(t.confidence_review_threshold, 1.0);
+    }
+
+    #[test]
+    fn test_constraint_conflict_provenance() {
+        let cc = ConstraintConflict {
+            constraint_a: "must finish by Friday".into(),
+            introduced_by_a: "principal".into(),
+            constraint_b: "cannot start until Monday".into(),
+            introduced_by_b: "alice".into(),
+        };
+        let json = serde_json::to_string(&cc).unwrap();
+        let back: ConstraintConflict = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.introduced_by_b, "alice");
+    }
+
+    #[test]
+    fn test_failure_reason_contradictory_uses_conflict_graph() {
+        let fr = FailureReason::ContradictoryConstraints {
+            conflict_graph: vec![ConstraintConflict {
+                constraint_a: "A".into(),
+                introduced_by_a: "p1".into(),
+                constraint_b: "B".into(),
+                introduced_by_b: "p2".into(),
+            }],
+        };
+        let json = serde_json::to_string(&fr).unwrap();
+        let back: FailureReason = serde_json::from_str(&json).unwrap();
+        match back {
+            FailureReason::ContradictoryConstraints { conflict_graph } => {
+                assert_eq!(conflict_graph.len(), 1);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_pending_review_task_status() {
+        let s = TaskStatus::PendingReview;
+        let json = serde_json::to_string(&s).unwrap();
+        let back: TaskStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, TaskStatus::PendingReview);
+    }
+
+    #[test]
+    fn test_clarification_request_serialises() {
+        let cr = ClarificationRequest {
+            id: "cr-1".into(),
+            task_id: "t-1".into(),
+            requesting_agent: "alice".into(),
+            principal_id: "bob".into(),
+            question: "Which format?".into(),
+            resolution: None,
+            created_at: chrono::Utc::now(),
+            resolved_at: None,
+        };
+        let json = serde_json::to_string(&cr).unwrap();
+        let back: ClarificationRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.question, "Which format?");
+    }
+
+    #[test]
+    fn test_commitment_state_agent_fulfilled() {
+        let s = CommitmentState::AgentFulfilled;
+        let json = serde_json::to_string(&s).unwrap();
+        let back: CommitmentState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, CommitmentState::AgentFulfilled);
+    }
+
+    #[test]
+    fn test_commitment_state_legacy_fulfilled_compat() {
+        // Old "Fulfilled" JSON should deserialise to Fulfilled variant
+        let back: CommitmentState = serde_json::from_str("\"Fulfilled\"").unwrap();
+        assert_eq!(back, CommitmentState::Fulfilled);
     }
 
     #[test]
