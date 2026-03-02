@@ -201,27 +201,31 @@ pub type AgentSet = OrSet<String>;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PnCounter {
     pub node_id: String,
-    pub increments: std::collections::HashMap<String, u64>,
-    pub decrements: std::collections::HashMap<String, u64>,
+    pub increments: HashMap<String, u64>,
+    pub decrements: HashMap<String, u64>,
 }
 
 impl PnCounter {
+    /// Create a new empty PN-Counter for the given node.
     pub fn new(node_id: String) -> Self {
         Self {
             node_id,
-            increments: std::collections::HashMap::new(),
-            decrements: std::collections::HashMap::new(),
+            increments: HashMap::new(),
+            decrements: HashMap::new(),
         }
     }
 
+    /// Increment this node's counter by the given amount.
     pub fn increment(&mut self, amount: u64) {
         *self.increments.entry(self.node_id.clone()).or_insert(0) += amount;
     }
 
+    /// Decrement this node's counter by the given amount.
     pub fn decrement(&mut self, amount: u64) {
         *self.decrements.entry(self.node_id.clone()).or_insert(0) += amount;
     }
 
+    /// Compute the current value: sum(increments) - sum(decrements) across all nodes.
     pub fn value(&self) -> i64 {
         let pos: u64 = self.increments.values().sum();
         let neg: u64 = self.decrements.values().sum();
