@@ -1375,6 +1375,8 @@ mod tests {
             pending_revocations: std::collections::HashMap::new(),
             guardian_designations: std::collections::HashMap::new(),
             guardian_votes: std::collections::HashMap::new(),
+            receipts: std::collections::HashMap::new(),
+            clarifications: std::collections::HashMap::new(),
         };
 
         state.mark_member_seen("did:swarm:agent-1");
@@ -1458,6 +1460,8 @@ mod tests {
             pending_revocations: std::collections::HashMap::new(),
             guardian_designations: std::collections::HashMap::new(),
             guardian_votes: std::collections::HashMap::new(),
+            receipts: std::collections::HashMap::new(),
+            clarifications: std::collections::HashMap::new(),
         };
 
         state.push_task_timeline_event("t1", "injected", "", None);
@@ -1604,6 +1608,8 @@ mod tests {
             pending_revocations: std::collections::HashMap::new(),
             guardian_designations: std::collections::HashMap::new(),
             guardian_votes: std::collections::HashMap::new(),
+            receipts: std::collections::HashMap::new(),
+            clarifications: std::collections::HashMap::new(),
         };
 
         let mut console = OperatorConsole::new(Arc::new(RwLock::new(state)), handle_a.clone());

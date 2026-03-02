@@ -20,6 +20,18 @@ pub enum ScoreTier {
 }
 
 impl ScoreTier {
+    /// Compute the score tier from an effective score value.
+    pub fn from_score(score: i64) -> ScoreTier {
+        match score {
+            s if s < 0 => ScoreTier::Suspended,
+            0..=99 => ScoreTier::Newcomer,
+            100..=499 => ScoreTier::Member,
+            500..=999 => ScoreTier::Trusted,
+            1000..=4999 => ScoreTier::Established,
+            _ => ScoreTier::Veteran,
+        }
+    }
+
     /// Returns the display name of this tier as a static string.
     pub fn as_str(&self) -> &'static str {
         match self {
