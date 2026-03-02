@@ -562,28 +562,24 @@ async fn api_submit_task(
         );
     }
 
-    let injector_agent_id = req.injector_agent_id.clone().unwrap_or_default();
-    if injector_agent_id.is_empty() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({
-                "ok": false,
-                "error": "forbidden: provide injector_agent_id — only agents with good standing can submit tasks"
-            })),
-        );
-    }
-    {
-        let s = web.state.read().await;
-        if !s.has_inject_reputation(&injector_agent_id) {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({
-                    "ok": false,
-                    "error": format!("insufficient_reputation: agent '{}' must complete at least 1 task first", injector_agent_id)
-                })),
-            );
+    // Web UI (operator interface): if no injector_agent_id provided, use the connector's own
+    // identity — it is always trusted and bypasses the reputation gate.
+    let injector_agent_id = match req.injector_agent_id.as_deref().filter(|s| !s.is_empty()) {
+        Some(id) => {
+            let s = web.state.read().await;
+            if !s.has_inject_reputation(id) {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({
+                        "ok": false,
+                        "error": format!("insufficient_reputation: agent '{}' must complete at least 1 task first", id)
+                    })),
+                );
+            }
+            id.to_string()
         }
-    }
+        None => web.state.read().await.agent_id.to_string(),
+    };
 
     let deliverables_val = serde_json::to_value(&req.deliverables).unwrap_or(serde_json::json!([]));
     let params = serde_json::json!({

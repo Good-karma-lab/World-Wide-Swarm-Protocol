@@ -19,7 +19,9 @@ FROM ubuntu:24.04
 
 RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
 
+WORKDIR /app
 COPY --from=builder /app/target/release/wws-connector /usr/local/bin/wws-connector
+COPY webapp/dist ./webapp/dist
 
 # Default ports
 EXPOSE 9370 9371
