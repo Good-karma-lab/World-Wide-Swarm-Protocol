@@ -1940,9 +1940,8 @@ pub(crate) async fn handle_inject_task(
                         id,
                         -32003,
                         format!(
-                            "insufficient_reputation: agent '{}' needs {} completed tasks to inject",
-                            agent_id,
-                            crate::connector::MIN_INJECT_TASKS_COMPLETED
+                            "insufficient_reputation: agent '{}' needs Member tier (score >= 100) to inject tasks",
+                            agent_id
                         ),
                     );
                 }

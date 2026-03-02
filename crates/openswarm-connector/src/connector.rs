@@ -217,9 +217,6 @@ pub struct ConnectorState {
     pub rep_event_rate_limiter: std::collections::HashMap<String, Vec<chrono::DateTime<chrono::Utc>>>,
 }
 
-/// Minimum tasks an agent must have completed to inject tasks into the swarm.
-pub const MIN_INJECT_TASKS_COMPLETED: u64 = 5;
-
 impl ConnectorState {
     /// Returns true if the given agent_id has sufficient reputation to inject tasks.
     /// The local agent (self) is always allowed.
