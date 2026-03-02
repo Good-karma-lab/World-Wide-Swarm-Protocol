@@ -20,6 +20,9 @@
 //! - `swarm.get_reputation()` - Get reputation scores for an agent
 //! - `swarm.get_reputation_events()` - Get paginated reputation event history
 //! - `swarm.submit_reputation_event()` - Submit an observer-weighted reputation event
+//! - `swarm.create_receipt()` - Create a commitment receipt at task start
+//! - `swarm.fulfill_receipt()` - Agent proposes fulfillment + posts evidence_hash
+//! - `swarm.verify_receipt()` - External verifier confirms or disputes receipt
 //!
 //! The server listens on localhost TCP and speaks JSON-RPC 2.0.
 //! Each line received is a JSON-RPC request; each line sent is a response.
@@ -238,6 +241,9 @@ async fn process_request(
         "swarm.get_identity" => {
             handle_get_identity(request_id, &request.params, state).await
         }
+        "swarm.create_receipt" => handle_create_receipt(request_id, &request.params, state).await,
+        "swarm.fulfill_receipt" => handle_fulfill_receipt(request_id, &request.params, state).await,
+        "swarm.verify_receipt" => handle_verify_receipt(request_id, &request.params, state).await,
         _ => SwarmResponse::error(
             request_id,
             -32601, // Method not found
@@ -2732,4 +2738,268 @@ async fn handle_get_identity(
         "pending_revocation": revocation,
         "guardians": guardians,
     }))
+}
+
+/// Handle `swarm.create_receipt` — create a commitment receipt at task start.
+async fn handle_create_receipt(
+    id: Option<String>,
+    params: &serde_json::Value,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    let task_id = match params.get("task_id").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return SwarmResponse::error(id, -32602, "Missing 'task_id'".into()),
+    };
+    let agent_id = match params.get("agent_id").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return SwarmResponse::error(id, -32602, "Missing 'agent_id'".into()),
+    };
+    let deliverable_type = params
+        .get("deliverable_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("artifact")
+        .to_string();
+    let rollback_cost = params
+        .get("rollback_cost")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let rollback_window = params
+        .get("rollback_window")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let receipt = openswarm_protocol::CommitmentReceipt {
+        commitment_id: uuid::Uuid::new_v4().to_string(),
+        deliverable_type,
+        evidence_hash: String::new(),
+        confidence_delta: 0.0,
+        can_undo: rollback_cost.as_deref().map(|c| c != "null").unwrap_or(true),
+        rollback_cost,
+        rollback_window,
+        expires_at: None,
+        commitment_state: openswarm_protocol::CommitmentState::Active,
+        task_id,
+        agent_id,
+        created_at: chrono::Utc::now(),
+    };
+    let receipt_id = receipt.commitment_id.clone();
+    let mut s = state.write().await;
+    s.receipts.insert(receipt_id.clone(), receipt);
+    SwarmResponse::success(id, serde_json::json!({ "receipt_id": receipt_id, "ok": true }))
+}
+
+/// Handle `swarm.fulfill_receipt` — agent proposes fulfillment + evidence_hash.
+async fn handle_fulfill_receipt(
+    id: Option<String>,
+    params: &serde_json::Value,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    let receipt_id = match params.get("receipt_id").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return SwarmResponse::error(id, -32602, "Missing 'receipt_id'".into()),
+    };
+    let evidence_hash = params
+        .get("evidence_hash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let confidence_delta = params
+        .get("confidence_delta")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    let mut s = state.write().await;
+    match s.receipts.get_mut(&receipt_id) {
+        Some(r) if r.commitment_state == openswarm_protocol::CommitmentState::Active => {
+            r.commitment_state = openswarm_protocol::CommitmentState::AgentFulfilled;
+            r.evidence_hash = evidence_hash;
+            r.confidence_delta = confidence_delta;
+            SwarmResponse::success(id, serde_json::json!({ "ok": true, "state": "AgentFulfilled" }))
+        }
+        Some(_) => SwarmResponse::error(id, -32600, "Receipt is not in Active state".into()),
+        None => SwarmResponse::error(id, -32602, format!("Receipt '{}' not found", receipt_id)),
+    }
+}
+
+/// Handle `swarm.verify_receipt` — external verifier confirms or disputes.
+async fn handle_verify_receipt(
+    id: Option<String>,
+    params: &serde_json::Value,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    let receipt_id = match params.get("receipt_id").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return SwarmResponse::error(id, -32602, "Missing 'receipt_id'".into()),
+    };
+    let confirmed = params
+        .get("confirmed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
+    let mut s = state.write().await;
+    match s.receipts.get_mut(&receipt_id) {
+        Some(r) if r.commitment_state == openswarm_protocol::CommitmentState::AgentFulfilled => {
+            r.commitment_state = if confirmed {
+                openswarm_protocol::CommitmentState::Verified
+            } else {
+                openswarm_protocol::CommitmentState::Disputed
+            };
+            let new_state_str = format!("{:?}", r.commitment_state);
+            SwarmResponse::success(id, serde_json::json!({ "ok": true, "state": new_state_str }))
+        }
+        Some(_) => SwarmResponse::error(
+            id,
+            -32600,
+            "Receipt is not in AgentFulfilled state".into(),
+        ),
+        None => SwarmResponse::error(id, -32602, format!("Receipt '{}' not found", receipt_id)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openswarm_protocol::CommitmentState;
+
+    fn make_params(pairs: &[(&str, serde_json::Value)]) -> serde_json::Value {
+        let mut map = serde_json::Map::new();
+        for (k, v) in pairs {
+            map.insert(k.to_string(), v.clone());
+        }
+        serde_json::Value::Object(map)
+    }
+
+    fn make_minimal_state() -> Arc<RwLock<ConnectorState>> {
+        Arc::new(RwLock::new(ConnectorState::new_for_test()))
+    }
+
+    #[tokio::test]
+    async fn test_create_receipt_stores_active() {
+        let state = make_minimal_state();
+        let params = make_params(&[
+            ("task_id", serde_json::json!("task-1")),
+            ("agent_id", serde_json::json!("agent-1")),
+        ]);
+        let resp = handle_create_receipt(Some("1".into()), &params, &state).await;
+        let body: serde_json::Value = serde_json::from_str(
+            &serde_json::to_string(&resp).unwrap(),
+        )
+        .unwrap();
+        let receipt_id = body["result"]["receipt_id"].as_str().unwrap().to_string();
+        assert!(body["result"]["ok"].as_bool().unwrap());
+
+        let s = state.read().await;
+        let r = s.receipts.get(&receipt_id).unwrap();
+        assert_eq!(r.commitment_state, CommitmentState::Active);
+        assert_eq!(r.task_id, "task-1");
+    }
+
+    #[tokio::test]
+    async fn test_fulfill_receipt_advances_to_agent_fulfilled() {
+        let state = make_minimal_state();
+        // Create
+        let params = make_params(&[
+            ("task_id", serde_json::json!("task-2")),
+            ("agent_id", serde_json::json!("agent-2")),
+        ]);
+        let resp = handle_create_receipt(Some("1".into()), &params, &state).await;
+        let body: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&resp).unwrap()).unwrap();
+        let receipt_id = body["result"]["receipt_id"].as_str().unwrap().to_string();
+
+        // Fulfill
+        let params2 = make_params(&[
+            ("receipt_id", serde_json::json!(receipt_id.clone())),
+            ("evidence_hash", serde_json::json!("sha256:abc")),
+            ("confidence_delta", serde_json::json!(0.1)),
+        ]);
+        let resp2 = handle_fulfill_receipt(Some("2".into()), &params2, &state).await;
+        let body2: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&resp2).unwrap()).unwrap();
+        assert_eq!(body2["result"]["state"].as_str().unwrap(), "AgentFulfilled");
+
+        let s = state.read().await;
+        let r = s.receipts.get(&receipt_id).unwrap();
+        assert_eq!(r.commitment_state, CommitmentState::AgentFulfilled);
+        assert_eq!(r.evidence_hash, "sha256:abc");
+    }
+
+    #[tokio::test]
+    async fn test_verify_receipt_confirmed_to_verified() {
+        let state = make_minimal_state();
+        let params = make_params(&[
+            ("task_id", serde_json::json!("task-3")),
+            ("agent_id", serde_json::json!("agent-3")),
+        ]);
+        let create_resp = handle_create_receipt(Some("1".into()), &params, &state).await;
+        let create_body: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&create_resp).unwrap()).unwrap();
+        let receipt_id = create_body["result"]["receipt_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let fulfill_params = make_params(&[("receipt_id", serde_json::json!(receipt_id.clone()))]);
+        handle_fulfill_receipt(Some("2".into()), &fulfill_params, &state).await;
+
+        let verify_params = make_params(&[
+            ("receipt_id", serde_json::json!(receipt_id.clone())),
+            ("confirmed", serde_json::json!(true)),
+        ]);
+        let verify_resp = handle_verify_receipt(Some("3".into()), &verify_params, &state).await;
+        let verify_body: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&verify_resp).unwrap()).unwrap();
+        assert_eq!(verify_body["result"]["state"].as_str().unwrap(), "Verified");
+
+        let s = state.read().await;
+        assert_eq!(
+            s.receipts.get(&receipt_id).unwrap().commitment_state,
+            CommitmentState::Verified
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verify_receipt_disputed() {
+        let state = make_minimal_state();
+        let params = make_params(&[
+            ("task_id", serde_json::json!("task-4")),
+            ("agent_id", serde_json::json!("agent-4")),
+        ]);
+        let create_resp = handle_create_receipt(Some("1".into()), &params, &state).await;
+        let create_body: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&create_resp).unwrap()).unwrap();
+        let receipt_id = create_body["result"]["receipt_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let fulfill_params = make_params(&[("receipt_id", serde_json::json!(receipt_id.clone()))]);
+        handle_fulfill_receipt(Some("2".into()), &fulfill_params, &state).await;
+
+        let verify_params = make_params(&[
+            ("receipt_id", serde_json::json!(receipt_id.clone())),
+            ("confirmed", serde_json::json!(false)),
+        ]);
+        let verify_resp = handle_verify_receipt(Some("3".into()), &verify_params, &state).await;
+        let verify_body: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&verify_resp).unwrap()).unwrap();
+        assert_eq!(verify_body["result"]["state"].as_str().unwrap(), "Disputed");
+
+        let s = state.read().await;
+        assert_eq!(
+            s.receipts.get(&receipt_id).unwrap().commitment_state,
+            CommitmentState::Disputed
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fulfill_receipt_wrong_state_returns_error() {
+        let state = make_minimal_state();
+        let params = make_params(&[("receipt_id", serde_json::json!("nonexistent-id"))]);
+        let resp = handle_fulfill_receipt(Some("1".into()), &params, &state).await;
+        let body: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&resp).unwrap()).unwrap();
+        assert!(body.get("error").is_some());
+        assert!(body.get("result").is_none());
+    }
 }
