@@ -1374,9 +1374,19 @@ pub(crate) async fn handle_submit_result(
         state.current_swarm_id.as_str().to_string()
     };
     let topic = SwarmTopics::results_for(&swarm_id, &submission.task_id);
+    let mut p2p_payload = serde_json::to_value(&submission).unwrap_or_default();
+    if let Some(obj) = p2p_payload.as_object_mut() {
+        let content_val = params
+            .get("content")
+            .or_else(|| params.get("result_text"))
+            .cloned();
+        if let Some(cv) = content_val {
+            obj.insert("content".to_string(), cv);
+        }
+    }
     let msg = SwarmMessage::new(
         ProtocolMethod::ResultSubmission.as_str(),
-        serde_json::to_value(&submission).unwrap_or_default(),
+        p2p_payload,
         String::new(),
     );
     if let Ok(data) = serde_json::to_vec(&msg) {

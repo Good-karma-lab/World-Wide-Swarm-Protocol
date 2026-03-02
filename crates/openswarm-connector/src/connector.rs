@@ -1670,11 +1670,14 @@ impl OpenSwarmConnector {
                 {
                     let mut state = self.state.write().await;
                     if let Some(task) = state.task_details.get(&params.task_id) {
-                        if task.assigned_to.as_ref() != Some(&params.agent_id) {
+                        let assignee_ok = params.is_synthesis
+                            || task.assigned_to.is_none()
+                            || task.assigned_to.as_ref() == Some(&params.agent_id);
+                        if !assignee_ok {
                             state.push_log(
                                 LogCategory::Task,
                                 format!(
-                                    "Ignoring late result for task {} from replaced assignee {}",
+                                    "Ignoring result for task {} from non-assignee {}",
                                     params.task_id, params.agent_id
                                 ),
                             );
@@ -1702,6 +1705,14 @@ impl OpenSwarmConnector {
                     // Update holon status to Done on result submission
                     if let Some(holon) = state.active_holons.get_mut(&params.task_id) {
                         holon.status = HolonStatus::Done;
+                    }
+                    // Populate task_result_text FIRST so deliberation message can read it
+                    if let Some(content) = raw_params.get("content").and_then(|v| v.as_str()) {
+                        if !content.trim().is_empty() {
+                            state
+                                .task_result_text
+                                .insert(params.task_id.clone(), content.to_string());
+                        }
                     }
                     // Record synthesis result as deliberation message
                     if let Some(text) = state.task_result_text.get(&params.task_id).cloned() {
@@ -1748,13 +1759,6 @@ impl OpenSwarmConnector {
                             params.task_id, params.agent_id, params.artifact.artifact_id
                         ),
                     );
-                    if let Some(content) = raw_params.get("content").and_then(|v| v.as_str()) {
-                        if !content.trim().is_empty() {
-                            state
-                                .task_result_text
-                                .insert(params.task_id.clone(), content.to_string());
-                        }
-                    }
                 }
             }
             Some(ProtocolMethod::Succession) => {
