@@ -2474,6 +2474,7 @@ async fn handle_get_reputation(
         }
         None => (0, 0, 0, "Newcomer".to_string(), 0, chrono::Utc::now().to_rfc3339()),
     };
+    let (guardian_quality_score, guardian_count) = s.guardian_quality_score(&target);
     SwarmResponse::success(id, serde_json::json!({
         "did": target,
         "raw_score": raw,
@@ -2482,6 +2483,8 @@ async fn handle_get_reputation(
         "tier": tier,
         "events_count": events_count,
         "last_active": last_active,
+        "guardian_quality_score": guardian_quality_score,
+        "guardian_count": guardian_count,
     }))
 }
 

@@ -95,6 +95,7 @@ impl FileServer {
             .route("/api/tasks/:task_id/deliberation", get(api_task_deliberation))
             .route("/api/tasks/:task_id/ballots", get(api_task_ballots))
             .route("/api/tasks/:task_id/irv-rounds", get(api_task_irv_rounds))
+            .route("/api/tasks/:task_id/receipts", get(api_task_receipts))
             .route("/api/holons", get(api_holons))
             .route("/api/holons/:task_id", get(api_holon_detail))
             .route("/api/agents", get(api_agents))
@@ -111,6 +112,9 @@ impl FileServer {
             .route("/api/names", get(api_names))
             .route("/api/keys", get(api_keys))
             .route("/api/inbox", get(api_inbox))
+            .route("/api/receipts", get(api_receipts))
+            .route("/api/receipts/:receipt_id", get(api_receipt_detail))
+            .route("/api/clarifications", get(api_clarifications))
             .route("/api/events", get(api_events))
             .nest_service("/assets", assets_service)
             .fallback(spa_index)
@@ -701,6 +705,8 @@ async fn api_agents(State(web): State<WebState>) -> Json<serde_json::Value> {
 
             let activity = s.agent_activity.get(&id);
             let tasks_processed = activity.map(|a| a.tasks_processed_count).unwrap_or(0);
+            let silent_failure_rate = activity.map(|a| a.silent_failure_rate()).unwrap_or(0.0);
+            let unverified_receipt_count = s.unverified_receipt_count(&id);
 
             // Use ledger-based score if available, fall back to FIRE formula for backward compat
             let reputation_score = s.reputation_ledgers.get(&id)
@@ -745,6 +751,8 @@ async fn api_agents(State(web): State<WebState>) -> Json<serde_json::Value> {
                 "tasks_injected_count": activity.map(|a| a.tasks_injected_count).unwrap_or(0),
                 "reputation_score": reputation_score,
                 "can_inject_tasks": can_inject,
+                "silent_failure_rate": silent_failure_rate,
+                "unverified_receipt_count": unverified_receipt_count,
                 "is_self": is_self,
                 "connected": connected,
                 "loop_active": loop_active,
@@ -1144,6 +1152,7 @@ async fn api_reputation(State(web): State<WebState>) -> Json<serde_json::Value> 
     let reputation: Vec<serde_json::Value> = s.reputation_ledgers.iter().map(|(id, ledger)| {
         let eff = ledger.effective_score();
         let name = s.agent_names.get(id).cloned().unwrap_or_else(|| id.clone());
+        let (guardian_quality_score, guardian_count) = s.guardian_quality_score(id);
         serde_json::json!({
             "agent_id": id,
             "name": name,
@@ -1153,6 +1162,8 @@ async fn api_reputation(State(web): State<WebState>) -> Json<serde_json::Value> 
             "tier": ledger.tier().as_str(),
             "events_count": ledger.events.len(),
             "last_active": ledger.last_active.to_rfc3339(),
+            "guardian_quality_score": guardian_quality_score,
+            "guardian_count": guardian_count,
         })
     }).collect();
     Json(serde_json::json!({ "reputation": reputation }))
@@ -1215,6 +1226,84 @@ async fn api_inbox(State(web): State<WebState>) -> Json<serde_json::Value> {
         })
     }).collect();
     Json(serde_json::json!({ "messages": messages, "count": messages.len() }))
+}
+
+async fn api_receipts(State(web): State<WebState>) -> Json<serde_json::Value> {
+    let s = web.state.read().await;
+    let receipts: Vec<serde_json::Value> = s.receipts.values().map(|r| {
+        serde_json::json!({
+            "receipt_id": r.commitment_id,
+            "task_id": r.task_id,
+            "agent_id": r.agent_id,
+            "state": format!("{:?}", r.commitment_state),
+            "deliverable_type": r.deliverable_type,
+            "rollback_cost": r.rollback_cost,
+            "evidence_hash": r.evidence_hash,
+            "confidence_delta": r.confidence_delta,
+            "created_at": r.created_at,
+        })
+    }).collect();
+    let count = receipts.len();
+    Json(serde_json::json!({ "receipts": receipts, "count": count }))
+}
+
+async fn api_receipt_detail(
+    State(web): State<WebState>,
+    AxumPath(receipt_id): AxumPath<String>,
+) -> impl IntoResponse {
+    let s = web.state.read().await;
+    match s.receipts.get(&receipt_id) {
+        Some(r) => (StatusCode::OK, Json(serde_json::json!({
+            "receipt_id": r.commitment_id,
+            "task_id": r.task_id,
+            "agent_id": r.agent_id,
+            "state": format!("{:?}", r.commitment_state),
+            "deliverable_type": r.deliverable_type,
+            "rollback_cost": r.rollback_cost,
+            "rollback_window": r.rollback_window,
+            "evidence_hash": r.evidence_hash,
+            "confidence_delta": r.confidence_delta,
+            "can_undo": r.can_undo,
+            "expires_at": r.expires_at,
+            "created_at": r.created_at,
+        }))).into_response(),
+        None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "receipt not found"}))).into_response(),
+    }
+}
+
+async fn api_task_receipts(
+    State(web): State<WebState>,
+    AxumPath(task_id): AxumPath<String>,
+) -> Json<serde_json::Value> {
+    let s = web.state.read().await;
+    let receipts: Vec<serde_json::Value> = s.receipts.values()
+        .filter(|r| r.task_id == task_id)
+        .map(|r| serde_json::json!({
+            "receipt_id": r.commitment_id,
+            "agent_id": r.agent_id,
+            "state": format!("{:?}", r.commitment_state),
+            "evidence_hash": r.evidence_hash,
+            "deliverable_type": r.deliverable_type,
+        }))
+        .collect();
+    let count = receipts.len();
+    Json(serde_json::json!({ "task_id": task_id, "receipts": receipts, "count": count }))
+}
+
+async fn api_clarifications(State(web): State<WebState>) -> Json<serde_json::Value> {
+    let s = web.state.read().await;
+    let items: Vec<serde_json::Value> = s.clarifications.values().map(|c| serde_json::json!({
+        "id": c.id,
+        "task_id": c.task_id,
+        "requesting_agent": c.requesting_agent,
+        "principal_id": c.principal_id,
+        "question": c.question,
+        "resolution": c.resolution,
+        "created_at": c.created_at,
+        "resolved_at": c.resolved_at,
+    })).collect();
+    let count = items.len();
+    Json(serde_json::json!({ "clarifications": items, "count": count }))
 }
 
 async fn api_events(
