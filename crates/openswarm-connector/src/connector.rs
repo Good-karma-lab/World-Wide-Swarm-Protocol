@@ -29,11 +29,11 @@ use crate::config::ConnectorConfig;
 use crate::reputation::{RepEvent, RepEventType, ReputationLedger, observer_weighted_points};
 use crate::tui::{LogCategory, LogEntry};
 
-const ACTIVE_MEMBER_STALENESS_SECS: u64 = 45;
-const PARTICIPATION_POLL_STALENESS_SECS: u64 = 180;
-const EXECUTION_ASSIGNMENT_TIMEOUT_SECS: i64 = 420;
-const PROPOSAL_STAGE_TIMEOUT_SECS: i64 = 30;
-const VOTING_STAGE_TIMEOUT_SECS: i64 = 30;
+const ACTIVE_MEMBER_STALENESS_SECS: u64 = 20;
+const PARTICIPATION_POLL_STALENESS_SECS: u64 = 60;
+const EXECUTION_ASSIGNMENT_TIMEOUT_SECS: i64 = 1800;
+const PROPOSAL_STAGE_TIMEOUT_SECS: i64 = 8;
+const VOTING_STAGE_TIMEOUT_SECS: i64 = 8;
 
 /// Maximum concurrent active tasks per principal (budget enforcement, Moltbook insight #19).
 pub const MAX_CONCURRENT_INJECTIONS: usize = 50;
@@ -868,9 +868,9 @@ impl OpenSwarmConnector {
         let announce_secs = self.config.swarm.announce_interval_secs;
         let mut swarm_announce_interval =
             tokio::time::interval(Duration::from_secs(announce_secs));
-        let mut bootstrap_retry_interval = tokio::time::interval(Duration::from_secs(20));
-        // Voting completion check every 5 seconds
-        let mut voting_check_interval = tokio::time::interval(Duration::from_secs(5));
+        let mut bootstrap_retry_interval = tokio::time::interval(Duration::from_secs(5));
+        // Voting completion check every 1 second for fast demo resolution
+        let mut voting_check_interval = tokio::time::interval(Duration::from_secs(1));
         let mut execution_timeout_interval = tokio::time::interval(Duration::from_secs(10));
 
         loop {
