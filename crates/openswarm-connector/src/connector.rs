@@ -93,6 +93,43 @@ pub struct InboxMessage {
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
+/// Pending key rotation (48-hour grace window).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PendingKeyRotation {
+    pub agent_did: String,
+    pub old_pubkey_hex: String,
+    pub new_pubkey_hex: String,
+    pub rotation_timestamp: i64,
+    pub grace_expires: chrono::DateTime<chrono::Utc>,
+}
+
+/// Pending emergency revocation (24-hour challenge window).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PendingRevocation {
+    pub agent_did: String,
+    pub recovery_pubkey_hex: String,
+    pub new_primary_pubkey_hex: String,
+    pub revocation_timestamp: i64,
+    pub challenge_expires: chrono::DateTime<chrono::Utc>,
+}
+
+/// Guardian designation for social recovery.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GuardianDesignation {
+    pub agent_did: String,
+    pub guardians: Vec<String>,
+    pub threshold: u32,
+}
+
+/// A single guardian vote for social recovery.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GuardianVote {
+    pub guardian_did: String,
+    pub target_did: String,
+    pub new_pubkey: String,
+    pub timestamp: i64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TaskVoteRequirement {
     pub expected_proposers: usize,
@@ -215,6 +252,14 @@ pub struct ConnectorState {
     pub reputation_ledgers: std::collections::HashMap<String, ReputationLedger>,
     /// Rate limiting for reputation event submission: agent_id -> timestamps of recent events.
     pub rep_event_rate_limiter: std::collections::HashMap<String, Vec<chrono::DateTime<chrono::Utc>>>,
+    /// Pending key rotation records (agent_did -> rotation).
+    pub pending_key_rotations: std::collections::HashMap<String, PendingKeyRotation>,
+    /// Pending emergency revocations (agent_did -> revocation).
+    pub pending_revocations: std::collections::HashMap<String, PendingRevocation>,
+    /// Guardian designations (agent_did -> designation).
+    pub guardian_designations: std::collections::HashMap<String, GuardianDesignation>,
+    /// Guardian recovery votes (target_did -> Vec<vote>).
+    pub guardian_votes: std::collections::HashMap<String, Vec<GuardianVote>>,
 }
 
 impl ConnectorState {
@@ -610,6 +655,10 @@ impl OpenSwarmConnector {
             inject_rate_limiter: std::collections::HashMap::new(),
             reputation_ledgers: std::collections::HashMap::new(),
             rep_event_rate_limiter: std::collections::HashMap::new(),
+            pending_key_rotations: std::collections::HashMap::new(),
+            pending_revocations: std::collections::HashMap::new(),
+            guardian_designations: std::collections::HashMap::new(),
+            guardian_votes: std::collections::HashMap::new(),
         };
 
         Ok(Self {
@@ -3152,6 +3201,10 @@ impl ConnectorState {
             inject_rate_limiter: std::collections::HashMap::new(),
             reputation_ledgers: std::collections::HashMap::new(),
             rep_event_rate_limiter: std::collections::HashMap::new(),
+            pending_key_rotations: std::collections::HashMap::new(),
+            pending_revocations: std::collections::HashMap::new(),
+            guardian_designations: std::collections::HashMap::new(),
+            guardian_votes: std::collections::HashMap::new(),
         }
     }
 }

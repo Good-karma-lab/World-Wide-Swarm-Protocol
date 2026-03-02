@@ -223,6 +223,21 @@ async fn process_request(
         "swarm.submit_reputation_event" => {
             handle_submit_reputation_event(request_id, &request.params, state).await
         }
+        "swarm.rotate_key" => {
+            handle_rotate_key(request_id, &request.params, state).await
+        }
+        "swarm.emergency_revocation" => {
+            handle_emergency_revocation(request_id, &request.params, state).await
+        }
+        "swarm.register_guardians" => {
+            handle_register_guardians(request_id, &request.params, state).await
+        }
+        "swarm.guardian_recovery_vote" => {
+            handle_guardian_recovery_vote(request_id, &request.params, state).await
+        }
+        "swarm.get_identity" => {
+            handle_get_identity(request_id, &request.params, state).await
+        }
         _ => SwarmResponse::error(
             request_id,
             -32601, // Method not found
@@ -2518,4 +2533,193 @@ async fn handle_submit_reputation_event(
     ledger.apply_event(event);
 
     SwarmResponse::success(id, serde_json::json!({ "accepted": true, "effective_points": effective }))
+}
+
+async fn handle_rotate_key(
+    id: Option<String>,
+    params: &serde_json::Value,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    use crate::connector::PendingKeyRotation;
+
+    let agent_did = params.get("agent_did").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let old_pubkey_hex = params.get("old_pubkey_hex").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let new_pubkey_hex = params.get("new_pubkey_hex").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let rotation_timestamp = params.get("rotation_timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+
+    if agent_did.is_empty() || new_pubkey_hex.is_empty() {
+        return SwarmResponse::error(id, -32602, "missing required fields".to_string());
+    }
+
+    let grace_expires = chrono::Utc::now() + chrono::Duration::hours(48);
+    let rotation = PendingKeyRotation {
+        agent_did: agent_did.clone(),
+        old_pubkey_hex,
+        new_pubkey_hex,
+        rotation_timestamp,
+        grace_expires,
+    };
+
+    let mut s = state.write().await;
+    s.pending_key_rotations.insert(agent_did, rotation);
+    s.push_log(crate::tui::LogCategory::Swarm, "Key rotation registered".into());
+
+    SwarmResponse::success(id, serde_json::json!({
+        "accepted": true,
+        "grace_expires": grace_expires.to_rfc3339(),
+    }))
+}
+
+async fn handle_emergency_revocation(
+    id: Option<String>,
+    params: &serde_json::Value,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    use crate::connector::PendingRevocation;
+
+    let agent_did = params.get("agent_did").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let recovery_pubkey_hex = params.get("recovery_pubkey_hex").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let new_primary_pubkey_hex = params.get("new_primary_pubkey_hex").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let revocation_timestamp = params.get("revocation_timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+
+    if agent_did.is_empty() || recovery_pubkey_hex.is_empty() || new_primary_pubkey_hex.is_empty() {
+        return SwarmResponse::error(id, -32602, "missing required fields".to_string());
+    }
+
+    let challenge_expires = chrono::Utc::now() + chrono::Duration::hours(24);
+    let revocation = PendingRevocation {
+        agent_did: agent_did.clone(),
+        recovery_pubkey_hex,
+        new_primary_pubkey_hex,
+        revocation_timestamp,
+        challenge_expires,
+    };
+
+    let mut s = state.write().await;
+    s.pending_revocations.insert(agent_did, revocation);
+    s.push_log(crate::tui::LogCategory::Swarm, "Emergency revocation registered (24h challenge window)".into());
+
+    SwarmResponse::success(id, serde_json::json!({
+        "accepted": true,
+        "challenge_expires": challenge_expires.to_rfc3339(),
+    }))
+}
+
+async fn handle_register_guardians(
+    id: Option<String>,
+    params: &serde_json::Value,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    use crate::connector::GuardianDesignation;
+
+    let agent_did = params.get("agent_did").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let guardians: Vec<String> = params.get("guardians")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
+    let threshold = params.get("threshold").and_then(|v| v.as_u64()).unwrap_or(2) as u32;
+
+    if agent_did.is_empty() || guardians.is_empty() {
+        return SwarmResponse::error(id, -32602, "missing agent_did or guardians".to_string());
+    }
+    if threshold as usize > guardians.len() {
+        return SwarmResponse::error(id, -32602, "threshold exceeds guardian count".to_string());
+    }
+
+    let designation = GuardianDesignation { agent_did: agent_did.clone(), guardians, threshold };
+    let mut s = state.write().await;
+    s.guardian_designations.insert(agent_did, designation);
+
+    SwarmResponse::success(id, serde_json::json!({ "registered": true }))
+}
+
+async fn handle_guardian_recovery_vote(
+    id: Option<String>,
+    params: &serde_json::Value,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    use crate::connector::GuardianVote;
+
+    let guardian_did = params.get("guardian_did").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let target_did = params.get("target_did").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let new_pubkey = params.get("new_pubkey").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if guardian_did.is_empty() || target_did.is_empty() || new_pubkey.is_empty() {
+        return SwarmResponse::error(id, -32602, "missing required fields".to_string());
+    }
+
+    // Guardian must have Trusted tier (score >= 500) per spec
+    let guardian_score = {
+        let s = state.read().await;
+        s.reputation_ledgers.get(&guardian_did)
+            .map(|l| l.effective_score())
+            .unwrap_or(0)
+    };
+    if guardian_score < 500 {
+        return SwarmResponse::error(id, -32603, "guardian needs Trusted tier (score >= 500)".to_string());
+    }
+
+    let mut s = state.write().await;
+
+    // Check guardian is in the designated list
+    let (threshold, is_guardian) = s.guardian_designations.get(&target_did)
+        .map(|d| (d.threshold, d.guardians.contains(&guardian_did)))
+        .unwrap_or((2, false));
+
+    if !is_guardian {
+        return SwarmResponse::error(id, -32603, "guardian not in designated list for this agent".to_string());
+    }
+
+    let vote = GuardianVote {
+        guardian_did: guardian_did.clone(),
+        target_did: target_did.clone(),
+        new_pubkey: new_pubkey.clone(),
+        timestamp: chrono::Utc::now().timestamp(),
+    };
+
+    let votes = s.guardian_votes.entry(target_did.clone()).or_default();
+    // Prevent duplicate votes
+    if !votes.iter().any(|v| v.guardian_did == guardian_did) {
+        votes.push(vote);
+    }
+
+    let vote_count = s.guardian_votes.get(&target_did).map(|v| v.len()).unwrap_or(0);
+    let threshold_met = vote_count >= threshold as usize;
+
+    SwarmResponse::success(id, serde_json::json!({
+        "accepted": true,
+        "votes_collected": vote_count,
+        "threshold": threshold,
+        "threshold_met": threshold_met,
+    }))
+}
+
+async fn handle_get_identity(
+    id: Option<String>,
+    params: &serde_json::Value,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    let did = params.get("did").and_then(|v| v.as_str())
+        .unwrap_or("").to_string();
+    let s = state.read().await;
+    let target = if did.is_empty() { s.agent_id.to_string() } else { did };
+
+    let rotation = s.pending_key_rotations.get(&target).map(|r| serde_json::json!({
+        "new_pubkey_hex": r.new_pubkey_hex,
+        "grace_expires": r.grace_expires.to_rfc3339(),
+    }));
+    let revocation = s.pending_revocations.get(&target).map(|r| serde_json::json!({
+        "challenge_expires": r.challenge_expires.to_rfc3339(),
+    }));
+    let guardians = s.guardian_designations.get(&target).map(|d| serde_json::json!({
+        "guardians": d.guardians,
+        "threshold": d.threshold,
+    }));
+
+    SwarmResponse::success(id, serde_json::json!({
+        "did": target,
+        "pending_rotation": rotation,
+        "pending_revocation": revocation,
+        "guardians": guardians,
+    }))
 }
