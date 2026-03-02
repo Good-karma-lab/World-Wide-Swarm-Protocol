@@ -1243,10 +1243,14 @@ pub(crate) async fn handle_submit_result(
             );
         }
 
-        // Track silent failure rate (Moltbook insight #16)
-        if let Some(outcome_val) = params.get("outcome") {
-            let is_silent = outcome_val.get("FailedSilently").is_some()
-                || outcome_val.as_str() == Some("FailedSilently");
+        // Track silent failure rate (Moltbook insight #16).
+        // total_outcomes_reported increments on every submit_result call.
+        // silent_failure_count only increments when outcome is FailedSilently.
+        {
+            let is_silent = params.get("outcome").map(|outcome_val| {
+                outcome_val.get("FailedSilently").is_some()
+                    || outcome_val.as_str() == Some("FailedSilently")
+            }).unwrap_or(false);
             let activity = state.agent_activity.entry(submission.agent_id.to_string()).or_default();
             activity.total_outcomes_reported += 1;
             if is_silent {
