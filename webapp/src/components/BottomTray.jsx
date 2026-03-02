@@ -67,8 +67,8 @@ function buildTaskTree(taskList) {
 
 export default function BottomTray({ agents, tasks, onTaskClick, onAgentClick }) {
   const agentList = agents?.agents || []
-  const taskList = tasks?.tasks || []
-  const taskTree = buildTaskTree(taskList)
+  // Root tasks only — subtasks are visible in the TaskDetailPanel DAG and subtask table
+  const taskList = (tasks?.tasks || []).filter(t => !t.parent_task_id)
 
   const red    = agentList.filter(a => !a.connected).length
   const yellow = agentList.filter(a => a.connected && !a.loop_active).length
@@ -105,26 +105,20 @@ export default function BottomTray({ agents, tasks, onTaskClick, onAgentClick })
       <div className="tray-col">
         <div className="tray-label">Tasks</div>
         <div className="tray-scroll">
-          {taskTree.length === 0 && (
+          {taskList.length === 0 && (
             <div style={{ color: 'var(--text-dim)', fontSize: 11, fontFamily: 'var(--font-mono)' }}>
               No tasks yet
             </div>
           )}
-          {taskTree.slice(0, 30).map(t => (
+          {taskList.slice(0, 30).map(t => (
             <div
               key={t.task_id}
               className="task-item"
-              style={t._depth > 0 ? {
-                marginLeft: Math.min(t._depth, 3) * 12,
-                paddingLeft: 6,
-                borderLeft: '2px solid var(--border)',
-                opacity: 0.9,
-              } : {}}
               onClick={() => onTaskClick(t)}
             >
               <span className="task-status-dot" style={{ background: taskStatusColor(t.status) }} />
               <span className="task-id" style={{ fontFamily: 'var(--font-mono)', fontSize: 10 }}>
-                {t._depth > 0 ? '↳ ' : ''}{t.task_id.slice(0, 8)}…
+                {t.task_id.slice(0, 8)}…
               </span>
               <span className="task-desc">{t.description || t.task_id}</span>
               <span style={{ fontSize: 10, color: 'var(--text-muted)', flexShrink: 0 }}>{t.status}</span>
