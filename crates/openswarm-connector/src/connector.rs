@@ -278,6 +278,8 @@ pub struct ConnectorState {
     pub name_registry: std::collections::HashMap<String, String>,
     /// Inbox of direct messages received from other agents.
     pub inbox: Vec<InboxMessage>,
+    /// Outbox of direct messages sent by this agent.
+    pub outbox: Vec<InboxMessage>,
     /// Per-agent last inject timestamps for rate limiting (max 10 per 60s).
     pub inject_rate_limiter: std::collections::HashMap<String, Vec<chrono::DateTime<chrono::Utc>>>,
     /// Per-agent reputation ledgers (event log + scores).
@@ -774,6 +776,7 @@ impl OpenSwarmConnector {
             board_acceptances: std::collections::HashMap::new(),
             name_registry: std::collections::HashMap::new(),
             inbox: Vec::new(),
+            outbox: Vec::new(),
             inject_rate_limiter: std::collections::HashMap::new(),
             reputation_ledgers: std::collections::HashMap::new(),
             rep_event_rate_limiter: std::collections::HashMap::new(),
@@ -3326,6 +3329,7 @@ impl ConnectorState {
             board_acceptances: std::collections::HashMap::new(),
             name_registry: std::collections::HashMap::new(),
             inbox: Vec::new(),
+            outbox: Vec::new(),
             inject_rate_limiter: std::collections::HashMap::new(),
             reputation_ledgers: std::collections::HashMap::new(),
             rep_event_rate_limiter: std::collections::HashMap::new(),

@@ -2448,6 +2448,17 @@ async fn handle_send_message(
         (s.agent_id.to_string(), s.current_swarm_id.as_str().to_string())
     };
 
+    // Record in outbox before publishing
+    {
+        let mut s = state.write().await;
+        s.outbox.push(crate::connector::InboxMessage {
+            from: from.clone(),
+            to: to.clone(),
+            content: content.clone(),
+            timestamp: chrono::Utc::now(),
+        });
+    }
+
     let topic = SwarmTopics::dm_for(&swarm_id);
     let msg = SwarmMessage::new(
         ProtocolMethod::DirectMessage.as_str(),

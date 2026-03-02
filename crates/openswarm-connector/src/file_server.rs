@@ -23,6 +23,18 @@ use crate::connector::{ConnectorState, MessageTraceEvent};
 
 const ACTIVE_MEMBER_STALENESS_SECS: u64 = 45;
 
+/// A direct P2P message (sent or received) for the local agent.
+/// Protocol traffic (proposals, critiques, votes) is NOT included here.
+#[derive(serde::Serialize)]
+struct DirectMessage {
+    timestamp: chrono::DateTime<chrono::Utc>,
+    /// "received" (inbox) or "sent" (outbox)
+    direction: String,
+    from: String,
+    to: String,
+    content: String,
+}
+
 struct EmbeddedDocs {
     skill_md: &'static str,
     heartbeat_md: &'static str,
@@ -112,6 +124,7 @@ impl FileServer {
             .route("/api/names", get(api_names))
             .route("/api/keys", get(api_keys))
             .route("/api/inbox", get(api_inbox))
+            .route("/api/conversations", get(api_conversations))
             .route("/api/receipts", get(api_receipts))
             .route("/api/receipts/:receipt_id", get(api_receipt_detail))
             .route("/api/clarifications", get(api_clarifications))
@@ -1236,6 +1249,36 @@ async fn api_inbox(State(web): State<WebState>) -> Json<serde_json::Value> {
         })
     }).collect();
     Json(serde_json::json!({ "messages": messages, "count": messages.len() }))
+}
+
+async fn api_conversations(State(web): State<WebState>) -> Json<serde_json::Value> {
+    let s = web.state.read().await;
+    let mut items: Vec<DirectMessage> = Vec::new();
+
+    for m in &s.inbox {
+        items.push(DirectMessage {
+            timestamp: m.timestamp,
+            direction: "received".into(),
+            from: m.from.clone(),
+            to: m.to.clone(),
+            content: m.content.clone(),
+        });
+    }
+
+    for m in &s.outbox {
+        items.push(DirectMessage {
+            timestamp: m.timestamp,
+            direction: "sent".into(),
+            from: m.from.clone(),
+            to: m.to.clone(),
+            content: m.content.clone(),
+        });
+    }
+
+    items.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    items.truncate(200);
+    let count = items.len();
+    Json(serde_json::json!({ "conversations": items, "count": count }))
 }
 
 async fn api_receipts(State(web): State<WebState>) -> Json<serde_json::Value> {
