@@ -14,6 +14,7 @@ pub mod agent_bridge;
 pub mod config;
 pub mod connector;
 pub mod file_server;
+pub mod identity_store;
 pub mod operator_console;
 pub mod reputation;
 pub mod rpc_server;

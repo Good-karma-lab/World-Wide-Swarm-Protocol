@@ -79,6 +79,10 @@ struct Cli {
     /// Disable the HTTP file server.
     #[arg(long)]
     no_files: bool,
+
+    /// Path to Ed25519 key file (default: ~/.config/wws-connector/<name>.key).
+    #[arg(long, value_name = "PATH")]
+    key_file: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -171,6 +175,13 @@ async fn main() -> anyhow::Result<()> {
         files_enabled = config.file_server.enabled,
         "Starting WWS.Connector"
     );
+
+    // Load or generate persistent identity key
+    let key_path = cli.key_file.unwrap_or_else(|| {
+        openswarm_connector::identity_store::default_key_path(&config.agent.name)
+    });
+    let _signing_key = openswarm_connector::identity_store::load_or_generate_key(&key_path)?;
+    tracing::info!(key_path = %key_path.display(), "Identity key loaded");
 
     // Create the connector.
     let connector = OpenSwarmConnector::new(config.clone())?;

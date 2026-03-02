@@ -32,6 +32,12 @@ crossterm = { workspace = true }
 axum = { version = "0.7", features = ["ws"] }
 tower-http = { version = "0.5", features = ["fs"] }
 futures-util = "0.3"
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
+bip39 = { workspace = true }
+hex = { workspace = true }
+dirs = { workspace = true }
 
 [dev-dependencies]
 ed25519-dalek = { workspace = true }
+tempfile = "3"
