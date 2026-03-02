@@ -1,0 +1,7 @@
+target/
+.git/
+.worktrees/
+*.md
+docs/
+tests/
+webapp/node_modules/

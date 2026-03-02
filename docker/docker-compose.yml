@@ -1,0 +1,142 @@
+version: '3.8'
+
+# 20-node WWS network for E2E testing
+# All nodes on same Docker bridge network
+
+networks:
+  wws-net:
+    driver: bridge
+
+x-node-base: &node-base
+  image: wws-connector:local
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  networks:
+    - wws-net
+  restart: "no"
+
+services:
+  wws-node-1:
+    <<: *node-base
+    ports: ["9370:9370", "9371:9371"]
+    command: ["--agent-name", "node-1", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9371/api/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  wws-node-2:
+    <<: *node-base
+    ports: ["9372:9370", "9373:9371"]
+    command: ["--agent-name", "node-2", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371"]
+    depends_on: [wws-node-1]
+
+  wws-node-3:
+    <<: *node-base
+    ports: ["9374:9370", "9375:9371"]
+    command: ["--agent-name", "node-3", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371"]
+    depends_on: [wws-node-1]
+
+  wws-node-4:
+    <<: *node-base
+    ports: ["9376:9370", "9377:9371"]
+    command: ["--agent-name", "node-4", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371"]
+    depends_on: [wws-node-1]
+
+  wws-node-5:
+    <<: *node-base
+    ports: ["9378:9370", "9379:9371"]
+    command: ["--agent-name", "node-5", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371"]
+    depends_on: [wws-node-1]
+
+  wws-node-6:
+    <<: *node-base
+    ports: ["9380:9370", "9381:9371"]
+    command: ["--agent-name", "node-6", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371"]
+    depends_on: [wws-node-1]
+
+  wws-node-7:
+    <<: *node-base
+    ports: ["9382:9370", "9383:9371"]
+    command: ["--agent-name", "node-7", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371"]
+    depends_on: [wws-node-1]
+
+  wws-node-8:
+    <<: *node-base
+    ports: ["9384:9370", "9385:9371"]
+    command: ["--agent-name", "node-8", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371"]
+    depends_on: [wws-node-1]
+
+  wws-node-9:
+    <<: *node-base
+    ports: ["9386:9370", "9387:9371"]
+    command: ["--agent-name", "node-9", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371"]
+    depends_on: [wws-node-1]
+
+  wws-node-10:
+    <<: *node-base
+    ports: ["9388:9370", "9389:9371"]
+    command: ["--agent-name", "node-10", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371"]
+    depends_on: [wws-node-1]
+
+  wws-node-11:
+    <<: *node-base
+    ports: ["9390:9370", "9391:9371"]
+    command: ["--agent-name", "node-11", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371"]
+    depends_on: [wws-node-1]
+
+  wws-node-12:
+    <<: *node-base
+    ports: ["9392:9370", "9393:9371"]
+    command: ["--agent-name", "node-12", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371"]
+    depends_on: [wws-node-1]
+
+  wws-node-13:
+    <<: *node-base
+    ports: ["9394:9370", "9395:9371"]
+    command: ["--agent-name", "node-13", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371"]
+    depends_on: [wws-node-1]
+
+  wws-node-14:
+    <<: *node-base
+    ports: ["9396:9370", "9397:9371"]
+    command: ["--agent-name", "node-14", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371"]
+    depends_on: [wws-node-1]
+
+  wws-node-15:
+    <<: *node-base
+    ports: ["9398:9370", "9399:9371"]
+    command: ["--agent-name", "node-15", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371"]
+    depends_on: [wws-node-1]
+
+  wws-node-16:
+    <<: *node-base
+    ports: ["9400:9370", "9401:9371"]
+    command: ["--agent-name", "node-16", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371"]
+    depends_on: [wws-node-1]
+
+  wws-node-17:
+    <<: *node-base
+    ports: ["9402:9370", "9403:9371"]
+    command: ["--agent-name", "node-17", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371"]
+    depends_on: [wws-node-1]
+
+  wws-node-18:
+    <<: *node-base
+    ports: ["9404:9370", "9405:9371"]
+    command: ["--agent-name", "node-18", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371"]
+    depends_on: [wws-node-1]
+
+  wws-node-19:
+    <<: *node-base
+    ports: ["9406:9370", "9407:9371"]
+    command: ["--agent-name", "node-19", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371"]
+    depends_on: [wws-node-1]
+
+  wws-node-20:
+    <<: *node-base
+    ports: ["9408:9370", "9409:9371"]
+    command: ["--agent-name", "node-20", "--rpc", "0.0.0.0:9370", "--files-addr", "0.0.0.0:9371"]
+    depends_on: [wws-node-1]
