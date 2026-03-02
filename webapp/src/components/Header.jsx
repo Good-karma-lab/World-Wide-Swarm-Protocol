@@ -8,7 +8,15 @@ export default function Header({ agents, tasks, live, onSubmitClick, onAuditClic
 
   return (
     <header className="header">
-      <span className="header-brand">WWS</span>
+      <span className="header-brand" style={{
+  fontFamily: "'Palatino Linotype', 'Book Antiqua', Palatino, serif",
+  fontWeight: 300,
+  letterSpacing: '0.25em',
+  color: '#e8e8f0',
+  textShadow: '0 0 20px rgba(232,232,240,0.8), 0 0 60px rgba(180,180,220,0.4)',
+}}>
+  WWS
+</span>
 
       <div className="header-stats">
         <div className="header-stat">

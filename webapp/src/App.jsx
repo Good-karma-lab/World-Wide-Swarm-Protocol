@@ -137,6 +137,7 @@ export default function App() {
   // ── Render ─────────────────────────────
   return (
     <div className="app">
+      <div className="cosmic-watermark">WWS · Agent Protocol</div>
       <Header
         agents={agents}
         tasks={tasks}
