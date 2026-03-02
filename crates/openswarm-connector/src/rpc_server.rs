@@ -1175,7 +1175,8 @@ pub(crate) async fn handle_submit_result(
                     state
                         .task_details
                         .get(sub_id)
-                        .map(|t| t.status == TaskStatus::Completed)
+                        // PendingReview is terminal for aggregation — result was submitted, awaiting human review
+                        .map(|t| t.status == TaskStatus::Completed || t.status == TaskStatus::PendingReview)
                         .unwrap_or(false)
                 });
                 if !all_subtasks_done {
@@ -1319,7 +1320,8 @@ pub(crate) async fn handle_submit_result(
                             state
                                 .task_details
                                 .get(sub_id)
-                                .map(|t| t.status == TaskStatus::Completed)
+                                // PendingReview is terminal for aggregation — result was submitted, awaiting human review
+                                .map(|t| t.status == TaskStatus::Completed || t.status == TaskStatus::PendingReview)
                                 .unwrap_or(false)
                         })
                 })
@@ -3292,5 +3294,45 @@ mod tests {
         let s = state.read().await;
         let task = s.task_details.get("t-cr-1").expect("task exists");
         assert_eq!(task.status, openswarm_protocol::TaskStatus::PendingReview);
+    }
+
+    #[tokio::test]
+    async fn test_submit_result_below_threshold_stays_completed() {
+        let state = make_minimal_state();
+        let network_handle = make_test_network_handle();
+
+        // Inject task with threshold 0.5
+        let inject_params = serde_json::json!({
+            "task_id": "t-cr-below",
+            "injector_agent_id": "did:swarm:test-self",
+            "description": "Task with high threshold",
+            "confidence_review_threshold": 0.5
+        });
+        let inject_resp = handle_inject_task(Some("1".into()), &inject_params, &state, &network_handle).await;
+        assert!(inject_resp.error.is_none(), "inject should succeed: {:?}", inject_resp.error);
+
+        // Give the task a parent so submit_result doesn't block with -32011
+        {
+            let mut s = state.write().await;
+            if let Some(t) = s.task_details.get_mut("t-cr-below") {
+                t.parent_task_id = Some("parent-placeholder".to_string());
+            }
+        }
+
+        // Submit result with delta BELOW threshold (0.3 < 0.5)
+        let submit_params = serde_json::json!({
+            "task_id": "t-cr-below",
+            "agent_id": "did:swarm:test-self",
+            "confidence_delta": 0.3,
+            "artifact": {}
+        });
+        let resp = handle_submit_result(Some("2".into()), &submit_params, &state, &network_handle).await;
+        assert!(resp.error.is_none(), "submit should succeed: {:?}", resp.error);
+
+        let s = state.read().await;
+        let task = s.task_details.get("t-cr-below").expect("task exists");
+        // Should be Completed, NOT PendingReview
+        assert_eq!(task.status, openswarm_protocol::TaskStatus::Completed,
+            "task below threshold should stay Completed, got {:?}", task.status);
     }
 }
