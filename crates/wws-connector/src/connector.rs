@@ -32,8 +32,8 @@ use crate::tui::{LogCategory, LogEntry};
 const ACTIVE_MEMBER_STALENESS_SECS: u64 = 20;
 const PARTICIPATION_POLL_STALENESS_SECS: u64 = 60;
 const EXECUTION_ASSIGNMENT_TIMEOUT_SECS: i64 = 1800;
-const PROPOSAL_STAGE_TIMEOUT_SECS: i64 = 8;
-const VOTING_STAGE_TIMEOUT_SECS: i64 = 8;
+const PROPOSAL_STAGE_TIMEOUT_SECS: i64 = 45;
+const VOTING_STAGE_TIMEOUT_SECS: i64 = 45;
 
 /// Maximum concurrent active tasks per principal (budget enforcement, Moltbook insight #19).
 pub const MAX_CONCURRENT_INJECTIONS: usize = 50;
@@ -1153,16 +1153,24 @@ impl WwsConnector {
                     let epoch = params.task.epoch;
 
                     if is_coordinator {
-                        // Count agents at my tier level for quorum
-                        let my_tier_agents = state.agent_tiers.values()
-                            .filter(|t| **t == my_tier)
-                            .count();
+                        // Use board-size formula for expected proposers (same as hierarchy)
+                        let total_members = state.member_last_seen.len() + 1;
+                        let pool = total_members.saturating_sub(1);
+                        let expected_proposers = if pool <= 2 {
+                            pool.max(1)
+                        } else if pool <= 12 {
+                            3
+                        } else if pool <= 30 {
+                            ((pool as f64) / 3.0).round().max(3.0).min(10.0) as usize
+                        } else {
+                            ((pool as f64).sqrt()).round().max(5.0).min(10.0) as usize
+                        };
 
-                        if my_tier_agents > 0 {
+                        if expected_proposers > 0 {
                             let mut rfp = RfpCoordinator::new(
                                 task_id.clone(),
                                 epoch,
-                                my_tier_agents,
+                                expected_proposers,
                             );
 
                             if let Err(e) = rfp.inject_task(&params.task) {
@@ -1171,7 +1179,7 @@ impl WwsConnector {
                                 state.rfp_coordinators.insert(task_id.clone(), rfp);
                                 state.push_log(
                                     LogCategory::Task,
-                                    format!("RFP initialized for task {} with {} {:?} agents", task_id, my_tier_agents, my_tier),
+                                    format!("RFP initialized for task {} with {} expected proposers", task_id, expected_proposers),
                                 );
                             }
                         }
@@ -2457,6 +2465,11 @@ impl WwsConnector {
                         "Voting completed successfully"
                     );
 
+                    // Finalize the RFP coordinator so phase shows "Completed"
+                    if let Some(rfp) = state.rfp_coordinators.get_mut(&task_id) {
+                        let _ = rfp.finalize();
+                    }
+
                     assignments_to_run.push((task_id.clone(), voting_result.winner.clone()));
                 }
                 Err(e) => {
@@ -2473,10 +2486,9 @@ impl WwsConnector {
             }
         }
 
-        // Remove completed voting engines
+        // Remove completed voting engines (keep task_vote_requirements for API display)
         for task_id in completed_votes {
             state.voting_engines.remove(&task_id);
-            state.task_vote_requirements.remove(&task_id);
         }
 
         drop(state);
@@ -3312,20 +3324,20 @@ impl WwsConnector {
             .map(|t| t.tier_level)
             .or_else(|| state.task_vote_requirements.get(task_id).map(|r| r.tier_level))
             .unwrap_or(1);
-        let tier = Self::level_to_tier(tier_level);
-        let in_tier = Self::active_participating_members_in_tier(
-            state,
-            tier,
-            Duration::from_secs(ACTIVE_MEMBER_STALENESS_SECS),
-            Duration::from_secs(PARTICIPATION_POLL_STALENESS_SECS),
-        )
-            .len();
-        // Fall back to all active agents when no agents of the required tier exist
-        let expected = if in_tier > 0 {
-            in_tier
+
+        // Expected = board size (Tier1 members). Compute from the same
+        // formula as recompute_hierarchy_from_members.
+        let total_members = state.member_last_seen.len() + 1;
+        let pool = total_members.saturating_sub(1); // minus injector(s)
+        let expected = if pool <= 2 {
+            pool.max(1)
+        } else if pool <= 12 {
+            3
+        } else if pool <= 30 {
+            ((pool as f64) / 3.0).round().max(3.0).min(10.0) as usize
         } else {
-            state.active_member_ids(Duration::from_secs(ACTIVE_MEMBER_STALENESS_SECS)).len()
-        }.max(1);
+            ((pool as f64).sqrt()).round().max(5.0).min(10.0) as usize
+        };
 
         TaskVoteRequirement {
             expected_proposers: expected,

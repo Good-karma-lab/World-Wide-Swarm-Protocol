@@ -45,10 +45,10 @@ Organizes N agents into a k-ary pyramid (default k=10). The structure is used fo
 
 ### Implementation
 
-- `crates/openswarm-hierarchy/src/pyramid.rs` — `PyramidAllocator` with `compute_layout()` and `assign_tier()`
-- `crates/openswarm-hierarchy/src/election.rs` — `ElectionManager` with weighted Borda count
-- `crates/openswarm-hierarchy/src/succession.rs` — `SuccessionManager` for automatic failover
-- `crates/openswarm-connector/src/connector.rs` — tier assignment in `ConnectorState`
+- `crates/wws-hierarchy/src/pyramid.rs` — `PyramidAllocator` with `compute_layout()` and `assign_tier()`
+- `crates/wws-hierarchy/src/election.rs` — `ElectionManager` with weighted Borda count
+- `crates/wws-hierarchy/src/succession.rs` — `SuccessionManager` for automatic failover
+- `crates/wws-connector/src/connector.rs` — tier assignment in `ConnectorState`
 
 ### Example: Query Hierarchy Status
 
@@ -101,9 +101,9 @@ Forming → Deliberating → Voting → Executing → Synthesizing → Done
 
 ### Implementation
 
-- `crates/openswarm-protocol/src/types.rs` — `HolonState`, `DeliberationMessage`, `BallotRecord`, `IrvRound`
-- `crates/openswarm-protocol/src/messages.rs` — `board.*` and `discussion.critique` param structs
-- `crates/openswarm-connector/src/connector.rs` — `active_holons`, `deliberation_messages`, `ballot_records`, `irv_rounds`, `board_acceptances` in `ConnectorState`
+- `crates/wws-protocol/src/types.rs` — `HolonState`, `DeliberationMessage`, `BallotRecord`, `IrvRound`
+- `crates/wws-protocol/src/messages.rs` — `board.*` and `discussion.critique` param structs
+- `crates/wws-connector/src/connector.rs` — `active_holons`, `deliberation_messages`, `ballot_records`, `irv_rounds`, `board_acceptances` in `ConnectorState`
 
 ### Query Board Status
 
@@ -167,8 +167,8 @@ echo '{"jsonrpc":"2.0","method":"swarm.get_deliberation","params":{"task_id":"ta
 
 ### Implementation
 
-- `crates/openswarm-consensus/src/rfp.rs` — `RfpCoordinator` with `transition_to_critique()`, `record_critique()`, `transition_to_voting()`
-- `crates/openswarm-connector/src/file_server.rs` — `/api/tasks/:id/deliberation` endpoint
+- `crates/wws-consensus/src/rfp.rs` — `RfpCoordinator` with `transition_to_critique()`, `record_critique()`, `transition_to_voting()`
+- `crates/wws-connector/src/file_server.rs` — `/api/tasks/:id/deliberation` endpoint
 
 ---
 
@@ -221,8 +221,8 @@ echo '{"jsonrpc":"2.0","method":"swarm.get_irv_rounds","params":{"task_id":"task
 
 ### Implementation
 
-- `crates/openswarm-consensus/src/voting.rs` — `VotingEngine` with `run_irv()`, `irv_rounds: Vec<IrvRound>`, `ballots_as_json()`
-- `crates/openswarm-connector/src/file_server.rs` — `/api/tasks/:id/ballots` and `/api/tasks/:id/irv-rounds`
+- `crates/wws-consensus/src/voting.rs` — `VotingEngine` with `run_irv()`, `irv_rounds: Vec<IrvRound>`, `ballots_as_json()`
+- `crates/wws-connector/src/file_server.rs` — `/api/tasks/:id/ballots` and `/api/tasks/:id/irv-rounds`
 
 ---
 
@@ -275,8 +275,8 @@ Root Task: "Analyze Q1 2026 market trends"     [depth=0, complexity=0.85]
 
 ### Implementation
 
-- `crates/openswarm-consensus/src/cascade.rs` — recursive decomposition logic
-- `crates/openswarm-connector/src/connector.rs` — sub-holon chair handoff via `board_acceptances`
+- `crates/wws-consensus/src/cascade.rs` — recursive decomposition logic
+- `crates/wws-connector/src/connector.rs` — sub-holon chair handoff via `board_acceptances`
 - Agent script: `agent-impl/opencode/opencode-agent.sh` — complexity check before delegating
 
 ---
@@ -288,18 +288,12 @@ Root Task: "Analyze Q1 2026 market trends"     [depth=0, complexity=0.85]
 ```bash
 echo '{
   "jsonrpc": "2.0",
-  "method": "task.inject",
-  "id": "inject-001",
+  "method": "swarm.inject_task",
+  "id": "1",
   "params": {
-    "task": {
-      "task_id": "task-research-001",
-      "description": "Research and summarize quantum computing advances in 2025",
-      "status": "Pending",
-      "tier_level": 1,
-      "subtasks": [],
-      "created_at": "2026-03-01T09:00:00Z"
-    },
-    "originator": "did:swarm:external..."
+    "description": "Research and summarize quantum computing advances in 2025",
+    "capabilities_required": ["research", "summarization"],
+    "horizon": "short"
   },
   "signature": ""
 }' | nc 127.0.0.1 9370
@@ -341,7 +335,7 @@ curl http://127.0.0.1:9371/api/tasks/task-research-001/irv-rounds
 ./scripts/run-agent.sh -n "bob" -b "/ip4/127.0.0.1/tcp/9000/p2p/12D3Koo..."
 
 # Inject a task at alice's connector
-echo '{"jsonrpc":"2.0","method":"task.inject","params":{"task":{"task_id":"t1","description":"Test task","status":"Pending","tier_level":1,"subtasks":[],"created_at":"2026-03-01T09:00:00Z"}},"id":"1","signature":""}' \
+echo '{"jsonrpc":"2.0","method":"swarm.inject_task","params":{"description":"Test task","capabilities_required":["research"]},"id":"1","signature":""}' \
   | nc 127.0.0.1 9370
 
 # Watch the board form on the holons API
@@ -362,6 +356,6 @@ curl http://127.0.0.1:9371/api/tasks/t1/irv-rounds
 ### Run the Full Test Suite
 
 ```bash
-# All 362 tests, 0 failures
+# All 477 tests, 0 failures
 ~/.cargo/bin/cargo test --workspace
 ```

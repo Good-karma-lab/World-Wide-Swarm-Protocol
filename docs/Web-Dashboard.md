@@ -6,15 +6,17 @@ The `wws-connector` serves a live web dashboard at `http://127.0.0.1:9371/` (or 
 
 ## Panels
 
-### Agent Network (top-left)
+### Cosmic Canvas (top-left)
 
-Live graph of all agents in the swarm. Nodes are colored by tier:
+Animated graph of all agents in the swarm. Nodes are colored by **status** (not tier):
 
-- **Teal** — Tier-1 orchestrators
-- **Blue** — Tier-2 coordinators
-- **Grey** — Executor agents
+- **Blue-white (hue 220)** — Healthy / active
+- **Amber (hue 42)** — Degraded / slow heartbeat
+- **Coral-red (hue 0)** — Offline / unreachable
 
-Clicking an agent node opens its detail view: agent name, DID, tier, last heartbeat, active task count.
+Connections between nodes are drawn from the `/api/topology` edges (peer links), with alpha fading based on canvas-diagonal distance. Nodes use an elliptical layout that fills widescreen viewports.
+
+Clicking an agent node opens its detail view: agent name, DID, reputation score, tier, capabilities, and active task count.
 
 ---
 
@@ -51,7 +53,7 @@ All agent identities are resolved to human names — no raw DIDs.
 
 Shows the full RFP (Request-for-Plan) consensus process:
 
-- **RFP Status** — current phase (CommitPhase / RevealPhase / CritiquePhase / ReadyForVoting / Done), commit and reveal counts
+- **RFP Status** — current phase (CommitPhase / RevealPhase / CritiquePhase / ReadyForVoting / Completed), commit count, reveal count, ballot count, IRV rounds count
 - **Proposed Plans** — one card per plan, showing:
   - Proposer's name
   - Plan rationale (the agent's own reasoning)
@@ -83,6 +85,16 @@ Each node in the tree shows:
 - Holon status: Forming → Deliberating → Voting → Executing → Synthesizing → Done
 - Recursion depth
 - Number of board members
+
+---
+
+### Messages Panel
+
+Direct messaging between agents:
+- **Inbox** — messages received from other agents (`GET /api/inbox`)
+- **Outbox** — messages sent by this agent (`GET /api/outbox`)
+
+Agent DIDs are resolved to human-readable names. Messages include sender, recipient, content, and timestamp.
 
 ---
 

@@ -17,44 +17,44 @@ After the winning plan is selected, the cascade mechanism recursively decomposes
 
 ```mermaid
 sequenceDiagram
-    participant Ext as External Client
-    participant T1A as Tier-1 Agent A
-    participant T1B as Tier-1 Agent B
-    participant T1C as Tier-1 Agent C
-    participant Senate as Tier-2 Senate
+    participant Ext as External Client / Injector
+    participant BA as Board Member A (Chair)
+    participant BB as Board Member B
+    participant BC as Board Member C
+    participant Voters as Other Swarm Voters
 
-    Ext->>T1A: task.inject (new task)
-    T1A->>T1A: RfpCoordinator::inject_task()
-    Note over T1A,T1C: Phase 1: COMMIT (hash only)
+    Ext->>BA: swarm.inject_task (new task)
+    BA->>BA: RfpCoordinator::inject_task()
+    Note over BA,BC: Phase 1: COMMIT (hash only)
 
-    T1A->>T1B: consensus.proposal_commit (plan_hash_A)
-    T1A->>T1C: consensus.proposal_commit (plan_hash_A)
-    T1B->>T1A: consensus.proposal_commit (plan_hash_B)
-    T1B->>T1C: consensus.proposal_commit (plan_hash_B)
-    T1C->>T1A: consensus.proposal_commit (plan_hash_C)
-    T1C->>T1B: consensus.proposal_commit (plan_hash_C)
+    BA->>BB: consensus.proposal_commit (plan_hash_A)
+    BA->>BC: consensus.proposal_commit (plan_hash_A)
+    BB->>BA: consensus.proposal_commit (plan_hash_B)
+    BB->>BC: consensus.proposal_commit (plan_hash_B)
+    BC->>BA: consensus.proposal_commit (plan_hash_C)
+    BC->>BB: consensus.proposal_commit (plan_hash_C)
 
-    Note over T1A,T1C: All k commits received (or 60s timeout)
-    Note over T1A,T1C: Phase 2: REVEAL (full plans)
+    Note over BA,BC: All board commits received (or 60s timeout)
+    Note over BA,BC: Phase 2: REVEAL (full plans)
 
-    T1A->>T1B: consensus.proposal_reveal (plan_A)
-    T1B->>T1A: consensus.proposal_reveal (plan_B)
-    T1C->>T1A: consensus.proposal_reveal (plan_C)
-    Note over T1A,T1C: Verify SHA-256(plan) == committed hash
+    BA->>BB: consensus.proposal_reveal (plan_A)
+    BB->>BA: consensus.proposal_reveal (plan_B)
+    BC->>BA: consensus.proposal_reveal (plan_C)
+    Note over BA,BC: Verify SHA-256(plan) == committed hash
 
-    Note over T1A,Senate: Phase 3: VOTING (IRV)
-    T1A->>T1B: consensus.vote (rank: B > C, self-vote prohibited)
-    T1B->>T1A: consensus.vote (rank: A > C, self-vote prohibited)
-    T1C->>T1A: consensus.vote (rank: A > B, self-vote prohibited)
-    Senate->>T1A: consensus.vote (rank: A > B > C)
+    Note over BA,Voters: Phase 3: VOTING (IRV, 45s timeout)
+    BA->>BB: consensus.vote (rank: B > C, self-vote prohibited)
+    BB->>BA: consensus.vote (rank: A > C, self-vote prohibited)
+    BC->>BA: consensus.vote (rank: A > B, self-vote prohibited)
+    Voters->>BA: consensus.vote (rank: A > B > C)
 
-    Note over T1A: IRV Tally: Plan A wins
-    Note over T1A: Agent A becomes Prime Orchestrator
+    Note over BA: IRV Tally: Plan A wins → RFP phase: Completed
+    Note over BA: Agent A becomes Prime Orchestrator
 
-    T1A->>T1B: task.assign (subtask from Plan A)
-    T1A->>T1C: task.assign (subtask from Plan A)
+    BA->>BB: task.assign (subtask from Plan A)
+    BA->>BC: task.assign (subtask from Plan A)
 
-    Note over T1B,T1C: Recursive cascade:<br/>Same RFP cycle at Tier-2
+    Note over BB,BC: Recursive cascade:<br/>Same RFP cycle for sub-holons
 ```
 
 ## RFP Protocol (Commit-Reveal-Critique)
@@ -74,13 +74,22 @@ The coordinator transitions through six phases:
 
 ### Phase 1: Commit
 
-Each Tier-1 agent independently generates a task decomposition plan (using their AI/LLM backend via the `PlanGenerator` trait), then:
+Each board member independently generates a task decomposition plan (using their AI/LLM backend via the `PlanGenerator` trait), then:
 
 1. Computes `plan_hash = SHA-256(canonical_json(plan))`
 2. Publishes only the hash via `consensus.proposal_commit`
 3. The `RfpCoordinator` stores the `(proposer, plan_hash)` pair
 
-**Wait condition:** All k Tier-1 agents submit commits, OR a timeout of **60 seconds** (`COMMIT_REVEAL_TIMEOUT_SECS`) elapses.
+**Wait condition:** All board members submit commits, OR a timeout of **60 seconds** (`COMMIT_REVEAL_TIMEOUT_SECS`) elapses.
+
+**Board size formula** — the number of expected proposers is derived from the available agent pool (excluding the injector):
+
+| Pool Size | Board Size |
+|-----------|------------|
+| ≤ 2 | pool (min 1) |
+| 3–12 | 3 |
+| 13–30 | round(pool / 3), clamped [3, 10] |
+| > 30 | round(sqrt(pool)), clamped [5, 10] |
 
 When all expected commits are received, the coordinator auto-transitions to the reveal phase. If the timeout is reached, `transition_to_reveal()` can be called manually.
 
@@ -139,16 +148,25 @@ rfp.transition_to_voting().unwrap();             // CritiquePhase → ReadyForVo
 
 The `VotingEngine` implements Instant Runoff Voting for selecting the winning plan.
 
+### Timeouts
+
+| Stage | Timeout | Constant |
+|-------|---------|----------|
+| Commit-reveal | 60s | `COMMIT_REVEAL_TIMEOUT_SECS` |
+| Proposal stage | 45s | `PROPOSAL_STAGE_TIMEOUT_SECS` |
+| Voting stage | 45s | `VOTING_STAGE_TIMEOUT_SECS` |
+| Voting engine | 120s | `VOTING_TIMEOUT_SECS` |
+
 ### Electorate
 
-- All k **Tier-1 agents** rank all plans EXCEPT their own (self-vote prohibition)
-- A random sample of **Tier-2 agents ("Senate")** -- size: `min(k, tier2_count / 2)`
+- All **board members** rank all plans EXCEPT their own (self-vote prohibition)
+- Additional swarm voters may participate
 
 ### Self-Vote Prohibition
 
 An agent CANNOT rank their own proposal as their first choice. The `VotingEngine` checks the `plan_proposers` map and rejects any vote where the voter's own plan is ranked first, returning `ConsensusError::SelfVoteProhibited`.
 
-This prevents gaming the system: if self-voting were allowed, every Tier-1 agent would naturally rank their own plan first, negating the voting mechanism.
+This prevents gaming the system: if self-voting were allowed, every board member would naturally rank their own plan first, negating the voting mechanism.
 
 ### Senate Sampling
 
@@ -235,10 +253,10 @@ After the winning plan is selected, its subtasks cascade down the hierarchy. The
 
 ### Cascade Process
 
-1. The winning plan's k subtasks are assigned to k Tier-1 agents via `task.assign`
-2. Each Tier-1 agent now has a subtask and initiates a NEW RFP cycle with its k Tier-2 subordinates
-3. The same commit-reveal-vote process repeats at each tier level
-4. This continues recursively until a **stop condition** is met
+1. The winning plan's subtasks are assigned to board members via `task.assign`
+2. Each assigned agent may become chair of a sub-holon if the subtask's complexity > 0.4
+3. Sub-holons run the same commit-reveal-vote process recursively
+4. This continues until a **stop condition** is met
 
 ### Stop Conditions
 

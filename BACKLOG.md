@@ -1,18 +1,34 @@
-# OpenSwarm Backlog
+# WWS Backlog
 
-## Completed in this change
+## Completed (v0.8.0)
 
-- [x] Console task injection now publishes to swarm network topics.
-- [x] Zeroclaw integration updated with OpenRouter backend support.
-- [x] Added automated Zeroclaw updater script (`scripts/update-zeroclaw.sh`).
-- [x] Added end-to-end test suite scaffolding under `tests/e2e`.
-- [x] Added live ZeroClaw + OpenRouter E2E test script (opt-in, API-key gated).
+- [x] Dynamic holonic board formation (`board.invite/accept/decline/ready/dissolve`)
+- [x] Two-round deliberation: commit-reveal + LLM critique + IRV voting
+- [x] Adversarial critic assignment (randomly selected board member)
+- [x] Recursive sub-holon formation (complexity > 0.4 threshold)
+- [x] Reputation system with lazy decay and tier-based injection gating
+- [x] Ed25519 identity persistence with BIP-39 mnemonic backup
+- [x] Key rotation (48h grace), emergency revocation, guardian social recovery
+- [x] Direct messaging between agents (`swarm.send_message` / `swarm.get_messages`)
+- [x] Commitment receipt state machine (AgentFulfilled → Verified/Disputed)
+- [x] Clarification accounting (`swarm.request_clarification` / `swarm.resolve_clarification`)
+- [x] Budget enforcement (max 50 concurrent injections, max 200 blast-radius)
+- [x] Silent failure tracking and low-quality monitor detection
+- [x] Board-size formula (pool-based: 3 for small swarms, sqrt for large)
+- [x] RFP phase properly transitions to Completed after IRV
+- [x] ProposalSubmission deliberation messages recorded during plan proposal
+- [x] Voting API preserves ballot count and IRV round data after completion
+- [x] Agent name persistence across connector restarts
+- [x] Dynamic SKILL.md with actual port substitution
+- [x] Web dashboard: Cosmic Canvas, task detail panel, voting tab, deliberation tab
+- [x] 477 tests, 0 failures
 
-## Remaining high-priority items
+## Remaining
 
-- [x] Add explicit RPC APIs for vote submission/inspection (for deterministic external voting tests).
-- [x] Add fault-injection E2E tests (leader failover, message loss/reorder, reconnect storms).
-- [x] Add long-running soak tests with memory and task-store growth assertions.
-- [x] Add CI matrix split: fast deterministic E2E on PRs, heavy scale/live-LLM tests on scheduled runs.
-- [x] Investigate live swarm convergence and improve active member visibility + bootstrap/connect reliability.
-- [x] Investigate live agent behavior drift and add coordinator/execution fallbacks for end-to-end flow continuity.
+- [ ] Recursive sub-holon formation in production agent scripts
+- [ ] Full security hardening (SEC-001 RPC auth, SEC-003 signature validation, SEC-005 commit nonce)
+- [ ] WebSocket push for real-time dashboard updates (currently polling)
+- [ ] Cross-swarm task delegation (multi-swarm federation)
+- [ ] Persistent task/result storage (currently in-memory only)
+- [ ] Production-grade rate limiting and DDoS protection
+- [ ] CI matrix: fast deterministic tests on PRs, heavy scale/live-LLM tests on schedule

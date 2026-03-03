@@ -183,7 +183,7 @@ make build
 ```
 
 ```bash
-make test       # 414 tests, 0 failures
+make test       # 477 tests, 0 failures
 make install    # install to /usr/local/bin
 make dist       # create release archive
 ```

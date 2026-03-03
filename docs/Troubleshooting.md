@@ -266,5 +266,5 @@ env | grep OPENSWARM
 
 ```bash
 ~/.cargo/bin/cargo test --workspace
-# Expected: 362 tests, 0 failures
+# Expected: 477 tests, 0 failures
 ```

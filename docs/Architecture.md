@@ -17,16 +17,16 @@ The WWS.Connector is the bridge between the AI agent and the P2P network. Agents
 
 ## Crate Dependency Graph
 
-The workspace is structured as six crates with clear dependency boundaries. The `openswarm-protocol` crate sits at the foundation, providing shared types and constants. The `wws-connector` crate sits at the top, integrating all other crates into a single binary.
+The workspace is structured as six crates with clear dependency boundaries. The `wws-protocol` crate sits at the foundation, providing shared types and constants. The `wws-connector` crate sits at the top, integrating all other crates into a single binary.
 
 ```mermaid
 graph TD
     CONN["<b>wws-connector</b><br/><i>JSON-RPC Server, CLI Binary,<br/>Agent Bridge, MCP Compat</i>"]
-    CONS["<b>openswarm-consensus</b><br/><i>RFP Commit-Reveal,<br/>IRV Voting, Cascade</i>"]
-    HIER["<b>openswarm-hierarchy</b><br/><i>Pyramid Allocation,<br/>Elections, Succession</i>"]
-    STATE["<b>openswarm-state</b><br/><i>OR-Set CRDT,<br/>Merkle-DAG, CAS</i>"]
-    NET["<b>openswarm-network</b><br/><i>libp2p Transport,<br/>GossipSub, Kademlia</i>"]
-    PROTO["<b>openswarm-protocol</b><br/><i>Types, Messages,<br/>Ed25519 Crypto, Constants</i>"]
+    CONS["<b>wws-consensus</b><br/><i>RFP Commit-Reveal,<br/>IRV Voting, Cascade</i>"]
+    HIER["<b>wws-hierarchy</b><br/><i>Pyramid Allocation,<br/>Elections, Succession</i>"]
+    STATE["<b>wws-state</b><br/><i>OR-Set CRDT,<br/>Merkle-DAG, CAS</i>"]
+    NET["<b>wws-network</b><br/><i>libp2p Transport,<br/>GossipSub, Kademlia</i>"]
+    PROTO["<b>wws-protocol</b><br/><i>Types, Messages,<br/>Ed25519 Crypto, Constants</i>"]
 
     CONN --> CONS
     CONN --> HIER
@@ -48,7 +48,7 @@ graph TD
 
 ## Crate Responsibilities
 
-### openswarm-protocol
+### wws-protocol
 
 The foundational crate that all other crates depend on. Contains no business logic -- only shared definitions.
 
@@ -67,7 +67,7 @@ The foundational crate that all other crates depend on. Contains no business log
 - `IrvRound` — per-round IRV history with tallies, eliminated candidate, continuing candidates
 - Extended `Task` fields: `task_type`, `horizon`, `capabilities_required`, `backtrack_allowed`, `knowledge_domains`, `tools_available` (all `#[serde(default)]` for backward compatibility)
 
-### openswarm-network
+### wws-network
 
 Wraps the libp2p networking stack and exposes a clean async interface.
 
@@ -80,7 +80,7 @@ Wraps the libp2p networking stack and exposes a clean async interface.
 | **SwarmHost** | Main event loop, `SwarmHandle` for cross-task communication |
 | **Re-exports** | `PeerId` and `Multiaddr` from libp2p |
 
-### openswarm-hierarchy
+### wws-hierarchy
 
 Manages the dynamic pyramid structure that organizes agents into tiers.
 
@@ -92,7 +92,7 @@ Manages the dynamic pyramid structure that organizes agents into tiers.
 | **GeoCluster** | Vivaldi coordinate-based latency clustering for Tier-2+ assignment |
 | **EpochManager** | Epoch lifecycle management (duration default: 3600s) |
 
-### openswarm-consensus
+### wws-consensus
 
 Implements the competitive planning and voting protocols.
 
@@ -113,7 +113,7 @@ Implements the competitive planning and voting protocols.
 - `pub irv_rounds: Vec<IrvRound>` — round-by-round elimination history (populated after `run_irv()`)
 - `ballots_as_json()` — serializable ballot data for API exposure
 
-### openswarm-state
+### wws-state
 
 Provides the distributed state management layer.
 
@@ -130,9 +130,9 @@ The top-level binary crate that ties everything together.
 
 | Component | Description |
 |-----------|-------------|
-| **RpcServer** | TCP-based JSON-RPC 2.0 server with 17 local API methods (13 original + 4 holonic) |
+| **RpcServer** | TCP-based JSON-RPC 2.0 server with 25+ local API methods (core + holonic + reputation + identity + messaging) |
 | **ConnectorState** | Shared state: OR-Sets, Merkle-DAG, epoch info, tier assignment, `active_holons`, `deliberation_messages`, `ballot_records`, `irv_rounds`, `board_acceptances` |
-| **FileServer** | HTTP server with 10 routes including `/api/holons`, `/api/holons/:task_id`, `/api/tasks/:id/deliberation`, `/api/tasks/:id/ballots`, `/api/tasks/:id/irv-rounds` |
+| **FileServer** | HTTP server with 15+ routes including `/api/holons`, `/api/tasks/:id/deliberation`, `/api/tasks/:id/ballots`, `/api/tasks/:id/irv-rounds`, `/api/reputation/:did`, `/api/inbox`, `/api/receipts`, `/api/clarifications` |
 | **CLI** | clap-based binary with `--config`, `--listen`, `--rpc`, `--bootstrap`, `--verbose`, `--agent-name` |
 | **Config** | TOML file loading with `OPENSWARM_*` environment variable overrides |
 
@@ -142,6 +142,10 @@ The top-level binary crate that ties everything together.
 - `ballot_records: HashMap<String, Vec<BallotRecord>>` — task_id → per-voter ballot history
 - `irv_rounds: HashMap<String, Vec<IrvRound>>` — task_id → IRV elimination rounds
 - `board_acceptances: HashMap<String, Vec<BoardAcceptParams>>` — task_id → acceptance queue
+- `reputation_ledgers: HashMap<String, ReputationLedger>` — agent_id → reputation state
+- `receipts: HashMap<String, CommitmentReceipt>` — receipt_id → commitment receipt
+- `clarifications: HashMap<String, ClarificationRequest>` — clarification_id → request
+- `inbox: Vec<InboxMessage>` — direct messages received by this agent
 
 ## Dynamic Pyramid Hierarchy
 
@@ -250,6 +254,12 @@ The holonic architecture uses dynamic ad-hoc boards that form per task and disso
    board.ready { task_id, chair_id, members: [agent_id], adversarial_critic: agent_id }
 
 4. Fallback: <3 responses → chair executes solo. 1 response → peer collaboration.
+
+Board size is determined by the pool of available agents (excluding the injector):
+  pool ≤ 2  → board = pool (min 1)
+  pool 3-12 → board = 3
+  pool 13-30 → board = round(pool/3), clamped to [3, 10]
+  pool > 30 → board = round(sqrt(pool)), clamped to [5, 10]
 ```
 
 ### HolonStatus Lifecycle

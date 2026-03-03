@@ -423,8 +423,16 @@ async fn voting_payload(
                     expected_voters,
                 )
             } else {
-                (Vec::new(), 0)
+                // Voting engine removed after completion — use persisted requirements
+                let req = s.task_vote_requirements.get(task_id);
+                let expected_voters = req.map(|rr| rr.expected_voters).unwrap_or(0);
+                (Vec::new(), expected_voters)
             };
+
+            // Include ballot and IRV data from persisted records
+            let ballot_count = s.ballot_records.get(task_id).map(|b| b.len()).unwrap_or(0);
+            let irv_rounds_count = s.irv_rounds.get(task_id).map(|r| r.len()).unwrap_or(0);
+
             serde_json::json!({
                 "task_id": task_id,
                 "phase": format!("{:?}", r.phase()),
@@ -434,6 +442,8 @@ async fn voting_payload(
                 "plans": plans,
                 "expected_proposers": expected_proposers,
                 "expected_voters": expected_voters,
+                "ballot_count": ballot_count,
+                "irv_rounds_count": irv_rounds_count,
                 "missing_proposer_names": missing_proposer_names,
                 "missing_voter_names": missing_voter_names,
             })

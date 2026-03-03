@@ -721,14 +721,24 @@ pub(crate) async fn handle_propose_plan(
             .get(&plan.task_id)
             .map(|t| t.tier_level)
             .unwrap_or(1);
-        let tier = tier_from_level(task_tier_level);
-        let in_tier = active_members_in_tier(&state, tier, Duration::from_secs(ACTIVE_MEMBER_STALENESS_SECS)).len();
-        let expected_proposers = if in_tier > 0 {
-            in_tier
+        // Expected proposers = board size (Tier1 members).
+        // At proposal time the hierarchy hasn't formed yet, so compute
+        // the board size from the same formula used in recompute_hierarchy:
+        //   pool <= 2  → no board
+        //   pool 3..12 → board = 3
+        //   pool 13..30 → board = round(pool/3), clamped 3-10
+        //   pool > 30  → board = round(sqrt(pool)), clamped 5-10
+        let total_members = state.member_last_seen.len() + 1; // +1 for self
+        let pool = total_members.saturating_sub(1); // minus injector
+        let expected_proposers = if pool <= 2 {
+            pool.max(1)
+        } else if pool <= 12 {
+            3
+        } else if pool <= 30 {
+            ((pool as f64) / 3.0).round().max(3.0).min(10.0) as usize
         } else {
-            // No agents of the required tier (small swarm); fall back to all active agents
-            state.active_member_ids(Duration::from_secs(ACTIVE_MEMBER_STALENESS_SECS)).len()
-        }.max(1);
+            ((pool as f64).sqrt()).round().max(5.0).min(10.0) as usize
+        };
 
         let commit = ProposalCommitParams {
             task_id: plan.task_id.clone(),
@@ -829,6 +839,33 @@ pub(crate) async fn handle_propose_plan(
             format!("Plan {} proposed with {} subtasks", plan.plan_id, plan.subtasks.len()),
             Some(plan.proposer.to_string()),
         );
+
+        // Record proposal as a deliberation message
+        let subtask_descs = plan
+            .subtasks
+            .iter()
+            .map(|s| format!("{}. {}", s.index, s.description))
+            .collect::<Vec<_>>()
+            .join("\n");
+        state
+            .deliberation_messages
+            .entry(plan.task_id.clone())
+            .or_default()
+            .push(DeliberationMessage {
+                id: uuid::Uuid::new_v4().to_string(),
+                task_id: plan.task_id.clone(),
+                timestamp: chrono::Utc::now(),
+                speaker: plan.proposer.clone(),
+                round: 1,
+                message_type: DeliberationType::ProposalSubmission,
+                content: format!(
+                    "Plan: {}\nSubtasks:\n{}",
+                    plan.rationale, subtask_descs
+                ),
+                referenced_plan_id: Some(plan.plan_id.clone()),
+                critic_scores: None,
+            });
+
         state.push_log(
             crate::tui::LogCategory::System,
             format!(
@@ -2047,8 +2084,18 @@ pub(crate) async fn handle_inject_task(
 
     // Always init RFP on the injecting node (no tier guard — injector IS Tier1 after rebuild).
     {
-        let active_members = state_guard.active_member_ids(Duration::from_secs(ACTIVE_MEMBER_STALENESS_SECS));
-        let expected_participants = active_members.len().max(1);
+        // Use the board-size formula for expected proposers/voters
+        let total_members = state_guard.member_last_seen.len() + 1;
+        let pool = total_members.saturating_sub(1); // minus injector
+        let expected_participants = if pool <= 2 {
+            pool.max(1)
+        } else if pool <= 12 {
+            3
+        } else if pool <= 30 {
+            ((pool as f64) / 3.0).round().max(3.0).min(10.0) as usize
+        } else {
+            ((pool as f64).sqrt()).round().max(5.0).min(10.0) as usize
+        };
 
         let mut rfp = wws_consensus::RfpCoordinator::new(
             task_id.clone(),
