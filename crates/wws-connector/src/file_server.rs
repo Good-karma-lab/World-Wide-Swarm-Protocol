@@ -1255,15 +1255,48 @@ async fn api_keys(State(web): State<WebState>) -> Json<serde_json::Value> {
 
 async fn api_inbox(State(web): State<WebState>) -> Json<serde_json::Value> {
     let s = web.state.read().await;
-    let messages: Vec<serde_json::Value> = s.inbox.iter().map(|m| {
-        serde_json::json!({
+    let agent_names = &s.agent_names;
+    let my_id = &s.agent_id;
+
+    let resolve_name = |did: &str| -> String {
+        agent_names.get(did).cloned()
+            .unwrap_or_else(|| did.chars().skip(did.len().saturating_sub(8)).collect())
+    };
+
+    let mut all: Vec<serde_json::Value> = Vec::new();
+
+    for m in &s.inbox {
+        all.push(serde_json::json!({
+            "direction": "received",
             "from": m.from,
+            "from_name": resolve_name(&m.from),
             "to": m.to,
+            "to_name": resolve_name(&m.to),
             "content": m.content,
             "timestamp": m.timestamp.to_rfc3339(),
-        })
-    }).collect();
-    Json(serde_json::json!({ "messages": messages, "count": messages.len() }))
+        }));
+    }
+    for m in &s.outbox {
+        all.push(serde_json::json!({
+            "direction": "sent",
+            "from": m.from,
+            "from_name": resolve_name(&m.from),
+            "to": m.to,
+            "to_name": resolve_name(&m.to),
+            "content": m.content,
+            "timestamp": m.timestamp.to_rfc3339(),
+        }));
+    }
+
+    // Sort by timestamp ascending.
+    all.sort_by(|a, b| {
+        let ta = a.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+        let tb = b.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+        ta.cmp(tb)
+    });
+
+    let _ = my_id; // used implicitly in name resolution
+    Json(serde_json::json!({ "messages": all, "count": all.len() }))
 }
 
 async fn api_receipts(State(web): State<WebState>) -> Json<serde_json::Value> {

@@ -2345,6 +2345,18 @@ async fn handle_send_message(
         serde_json::json!({ "from": from, "to": to, "content": content }),
         String::new(),
     );
+
+    // Store in outbox for UI visibility.
+    {
+        let mut s = state.write().await;
+        s.outbox.push(crate::connector::InboxMessage {
+            from: from.clone(),
+            to: to.clone(),
+            content: content.clone(),
+            timestamp: chrono::Utc::now(),
+        });
+    }
+
     // Fire-and-forget: publish in background so this RPC returns immediately under load.
     if let Ok(data) = serde_json::to_vec(&msg) {
         let nh = network_handle.clone();

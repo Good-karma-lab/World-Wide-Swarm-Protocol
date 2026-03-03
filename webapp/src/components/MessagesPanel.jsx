@@ -1,30 +1,70 @@
-const SKIP_METHODS = new Set(['keepalive', 'ping', 'pong', 'peer_discovery', 'peer_announce', 'swarm_join', 'swarm_leave'])
-const SKIP_TOPICS  = new Set(['_keepalive', '_discovery', '_internal'])
+import { useState, useEffect, useCallback } from 'react'
+import { api } from '../api/client'
 
-function scrub(s) {
-  return String(s || '').replace(/did:swarm:[A-Za-z0-9]+/g, m => '[' + m.slice(-6) + ']')
-}
+export default function MessagesPanel({ agents }) {
+  const [messages, setMessages] = useState([])
+  const [loading, setLoading] = useState(true)
 
-export default function MessagesPanel({ messages }) {
-  const filtered = (messages || []).filter(m => {
-    if (SKIP_METHODS.has((m.method || '').toLowerCase())) return false
-    if (SKIP_TOPICS.has((m.topic || '').toLowerCase()))   return false
-    return true
-  })
+  const fetchMessages = useCallback(async () => {
+    try {
+      const data = await api.inbox()
+      setMessages(data.messages || [])
+    } catch (_) {}
+    setLoading(false)
+  }, [])
+
+  useEffect(() => {
+    fetchMessages()
+    const timer = setInterval(fetchMessages, 4000)
+    return () => clearInterval(timer)
+  }, [fetchMessages])
+
+  const agentsList = agents?.agents || []
+  const resolveName = (did) => {
+    if (!did) return did
+    const found = agentsList.find(a => a.agent_id === did)
+    return found?.name || did.slice(-8)
+  }
+
+  if (loading) return <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>Loading messages...</div>
 
   return (
     <div>
-      <div className="detail-section-title">P2P Business Messages ({filtered.length})</div>
+      <div className="detail-section-title">Agent Conversations ({messages.length})</div>
       <div className="log-box" style={{ maxHeight: '70vh' }}>
-        {filtered.length === 0 && <div style={{ color: 'var(--text-dim)' }}>No messages yet.</div>}
-        {filtered.map((m, i) => (
-          <div key={i} style={{ marginBottom: 2 }}>
-            <span style={{ color: 'var(--text-muted)' }}>[{m.timestamp}]</span>{' '}
-            <span style={{ color: 'var(--platinum, #e8e8f0)' }}>{m.topic}</span>{' '}
-            {m.method && <span style={{ color: '#a78bfa' }}>{m.method}</span>}{' '}
-            {scrub(m.outcome || '')}
-          </div>
-        ))}
+        {messages.length === 0 && <div style={{ color: 'var(--text-dim)' }}>No conversations yet.</div>}
+        {messages.map((m, i) => {
+          const isSent = m.direction === 'sent'
+          const fromName = m.from_name || resolveName(m.from)
+          const toName = m.to_name || resolveName(m.to)
+          return (
+            <div key={i} style={{
+              marginBottom: 8,
+              padding: '8px 12px',
+              background: isSent ? 'rgba(0, 229, 176, 0.06)' : 'rgba(167, 139, 250, 0.06)',
+              borderLeft: `3px solid ${isSent ? '#00e5b0' : '#a78bfa'}`,
+              borderRadius: '0 6px 6px 0',
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                <span style={{ fontSize: 11 }}>
+                  <span style={{ color: isSent ? '#00e5b0' : '#a78bfa', fontWeight: 600 }}>
+                    {fromName}
+                  </span>
+                  <span style={{ color: 'var(--text-muted)', margin: '0 6px' }}>→</span>
+                  <span style={{ color: 'var(--text-dim)', fontWeight: 500 }}>
+                    {toName}
+                  </span>
+                </span>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                  {m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : ''}
+                </span>
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+                {m.content}
+              </div>
+            </div>
+          )
+        })}
       </div>
     </div>
   )

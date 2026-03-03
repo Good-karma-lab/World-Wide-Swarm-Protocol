@@ -101,9 +101,9 @@ function buildConnections(nodes, topoEdges) {
 
   nodes.forEach((n, i) => {
     if (n.type === 'agent') {
-      // Agent nodes: topology edges only (no connections if no edges)
+      // Agent nodes: hierarchy/holon edges only (no peer_link connections)
       const connected = topoEdges
-        .filter(e => e.source === n.id || e.target === n.id)
+        .filter(e => (e.source === n.id || e.target === n.id) && e.kind !== 'peer_link')
         .map(e => idToIdx[e.source === n.id ? e.target : e.source])
         .filter(j => j !== undefined && j !== i)
       n.connections = [...new Set(connected)]

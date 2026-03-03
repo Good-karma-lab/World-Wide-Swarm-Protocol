@@ -278,6 +278,8 @@ pub struct ConnectorState {
     pub name_registry: std::collections::HashMap<String, String>,
     /// Inbox of direct messages received from other agents.
     pub inbox: Vec<InboxMessage>,
+    /// Outbox of direct messages sent to other agents.
+    pub outbox: Vec<InboxMessage>,
     /// Per-agent last inject timestamps for rate limiting (max 10 per 60s).
     pub inject_rate_limiter: std::collections::HashMap<String, Vec<chrono::DateTime<chrono::Utc>>>,
     /// Per-agent reputation ledgers (event log + scores).
@@ -774,6 +776,7 @@ impl WwsConnector {
             board_acceptances: std::collections::HashMap::new(),
             name_registry: std::collections::HashMap::new(),
             inbox: Vec::new(),
+            outbox: Vec::new(),
             inject_rate_limiter: std::collections::HashMap::new(),
             reputation_ledgers: std::collections::HashMap::new(),
             rep_event_rate_limiter: std::collections::HashMap::new(),
@@ -1342,8 +1345,10 @@ impl WwsConnector {
                             let _ = rfp.inject_task(&injected_task);
                         }
                         if let Err(e) = rfp.record_commit(&params) {
-                            tracing::warn!(error = %e, "Failed to record proposal commit");
-                        } else if matches!(rfp.phase(), wws_consensus::rfp::RfpPhase::CommitPhase) {
+                            tracing::debug!(error = %e, "Commit already recorded (likely own proposal)");
+                        }
+                        // Advance to reveal if still in commit phase (handles both fresh and duplicate commits)
+                        if matches!(rfp.phase(), wws_consensus::rfp::RfpPhase::CommitPhase) {
                             let _ = rfp.transition_to_reveal();
                         }
                     }
@@ -2636,18 +2641,35 @@ impl WwsConnector {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut state = self.state.write().await;
 
-        // Get the winning plan from RFP coordinator
+        // Get the winning plan from RFP coordinator (or pending reveals as fallback)
         let winning_plan = {
             let rfp = state.rfp_coordinators.get(task_id)
                 .ok_or("RFP coordinator not found")?;
 
             // Get the revealed proposal matching the winner
-            let revealed_proposal = rfp.reveals
+            if let Some(revealed_proposal) = rfp.reveals
                 .values()
                 .find(|p| p.plan.plan_id == winner_plan_id)
-                .ok_or("Winning plan not found in reveals")?;
-
-            revealed_proposal.plan.clone()
+            {
+                revealed_proposal.plan.clone()
+            } else {
+                // Fallback: check pending_plan_reveals (plan may not have been formally revealed)
+                let pending = state.pending_plan_reveals.get(task_id);
+                let from_pending = pending.and_then(|reveals| {
+                    reveals.values().find(|p| p.plan_id == winner_plan_id).cloned()
+                });
+                match from_pending {
+                    Some(plan) => {
+                        tracing::info!(
+                            task_id = %task_id,
+                            plan_id = %winner_plan_id,
+                            "Found winning plan in pending_plan_reveals (not yet formally revealed)"
+                        );
+                        plan
+                    }
+                    None => return Err("Winning plan not found in reveals or pending reveals".into()),
+                }
+            }
         };
 
         // Get my subordinates for assignment
@@ -3337,6 +3359,7 @@ impl ConnectorState {
             board_acceptances: std::collections::HashMap::new(),
             name_registry: std::collections::HashMap::new(),
             inbox: Vec::new(),
+            outbox: Vec::new(),
             inject_rate_limiter: std::collections::HashMap::new(),
             reputation_ledgers: std::collections::HashMap::new(),
             rep_event_rate_limiter: std::collections::HashMap::new(),
