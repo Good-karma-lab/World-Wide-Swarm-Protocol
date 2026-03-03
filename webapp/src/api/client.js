@@ -44,4 +44,5 @@ export const api = {
   taskDeliberation: (taskId) => fetchJson(`/api/tasks/${taskId}/deliberation`),
   taskBallots: (taskId) => fetchJson(`/api/tasks/${taskId}/ballots`),
   taskIrvRounds: (taskId) => fetchJson(`/api/tasks/${taskId}/irv-rounds`),
+  subtaskResults: (taskId) => fetchJson(`/api/tasks/${taskId}/subtask-results`),
 }

@@ -88,6 +88,9 @@ pub struct Task {
     pub status: TaskStatus,
     pub description: String,
     pub assigned_to: Option<AgentId>,
+    /// The agent that injected this task (drives hierarchy formation).
+    #[serde(default)]
+    pub injector_id: Option<AgentId>,
     pub tier_level: u32,
     pub subtasks: Vec<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -124,6 +127,7 @@ impl Task {
             status: TaskStatus::Pending,
             description,
             assigned_to: None,
+            injector_id: None,
             tier_level,
             subtasks: Vec::new(),
             created_at: chrono::Utc::now(),

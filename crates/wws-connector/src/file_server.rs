@@ -96,6 +96,7 @@ impl FileServer {
             .route("/api/tasks/:task_id/ballots", get(api_task_ballots))
             .route("/api/tasks/:task_id/irv-rounds", get(api_task_irv_rounds))
             .route("/api/tasks/:task_id/receipts", get(api_task_receipts))
+            .route("/api/tasks/:task_id/subtask-results", get(api_subtask_results))
             .route("/api/holons", get(api_holons))
             .route("/api/holons/:task_id", get(api_holon_detail))
             .route("/api/agents", get(api_agents))
@@ -795,54 +796,81 @@ async fn api_topology(State(web): State<WebState>) -> Json<serde_json::Value> {
     let s = web.state.read().await;
     let members = collect_known_members(&s);
 
-    let mut nodes = members
-        .iter()
-        .map(|id| {
-            serde_json::json!({
-                "id": id,
-                "name": s.agent_names.get(id).cloned().unwrap_or_else(|| short_agent_label(id)),
-                "tier": format!("{:?}", s.agent_tiers.get(id).copied().unwrap_or(Tier::Executor)),
-                "is_self": *id == s.agent_id.to_string(),
+    let is_flat = s.agent_tiers.is_empty();
+
+    let nodes: Vec<serde_json::Value> = if is_flat {
+        // Flat swarm: all agents from member_last_seen, no tier info.
+        members
+            .iter()
+            .map(|id| {
+                serde_json::json!({
+                    "id": id,
+                    "name": s.agent_names.get(id).cloned().unwrap_or_else(|| short_agent_label(id)),
+                    "tier": "Flat",
+                    "is_self": *id == s.agent_id.to_string(),
+                })
             })
-        })
-        .collect::<Vec<_>>();
+            .collect()
+    } else {
+        let mut nodes: Vec<serde_json::Value> = members
+            .iter()
+            .map(|id| {
+                serde_json::json!({
+                    "id": id,
+                    "name": s.agent_names.get(id).cloned().unwrap_or_else(|| short_agent_label(id)),
+                    "tier": format!("{:?}", s.agent_tiers.get(id).copied().unwrap_or(Tier::Executor)),
+                    "is_self": *id == s.agent_id.to_string(),
+                })
+            })
+            .collect();
 
-    // Count Tier1 agents — only show the virtual root node when there are multiple Tier1 agents.
-    let tier1_agents: Vec<&String> = s
-        .agent_tiers
-        .iter()
-        .filter(|(id, tier)| **tier == Tier::Tier1 && members.iter().any(|m| m == *id))
-        .map(|(id, _)| id)
-        .collect();
+        // Count Tier1 agents — only show virtual root when multiple Tier1 agents.
+        let tier1_agents: Vec<&String> = s
+            .agent_tiers
+            .iter()
+            .filter(|(id, tier)| **tier == Tier::Tier1 && members.iter().any(|m| m == *id))
+            .map(|(id, _)| id)
+            .collect();
 
-    let show_root = tier1_agents.len() > 1;
-    if show_root {
-        nodes.push(serde_json::json!({
-            "id": "zero0",
-            "name": "WWS",
-            "tier": "Root",
-            "is_self": false,
-        }));
-    }
-
-    let mut edges = s
-        .agent_parents
-        .iter()
-        .map(|(child, parent)| {
-            serde_json::json!({"source": parent, "target": child, "kind": "hierarchy"})
-        })
-        .collect::<Vec<_>>();
-
-    if show_root {
-        for id in &tier1_agents {
-            edges.push(serde_json::json!({
-                "source": "zero0",
-                "target": id,
-                "kind": "root_hierarchy"
+        if tier1_agents.len() > 1 {
+            nodes.push(serde_json::json!({
+                "id": "zero0",
+                "name": "WWS",
+                "tier": "Root",
+                "is_self": false,
             }));
+        }
+
+        nodes
+    };
+
+    let mut edges = Vec::new();
+
+    if !is_flat {
+        // Hierarchy edges.
+        for (child, parent) in &s.agent_parents {
+            edges.push(serde_json::json!({"source": parent, "target": child, "kind": "hierarchy"}));
+        }
+
+        let tier1_agents: Vec<&String> = s
+            .agent_tiers
+            .iter()
+            .filter(|(id, tier)| **tier == Tier::Tier1 && members.iter().any(|m| m == *id))
+            .map(|(id, _)| id)
+            .collect();
+
+        if tier1_agents.len() > 1 {
+            for id in &tier1_agents {
+                edges.push(serde_json::json!({
+                    "source": "zero0",
+                    "target": id,
+                    "kind": "root_hierarchy"
+                }));
+            }
         }
     }
 
+    // Peer links always shown.
     for peer in s.agent_set.elements() {
         edges.push(serde_json::json!({
             "source": s.agent_id.to_string(),
@@ -1298,6 +1326,44 @@ async fn api_task_receipts(
         .collect();
     let count = receipts.len();
     Json(serde_json::json!({ "task_id": task_id, "receipts": receipts, "count": count }))
+}
+
+async fn api_subtask_results(
+    State(web): State<WebState>,
+    AxumPath(task_id): AxumPath<String>,
+) -> Json<serde_json::Value> {
+    let s = web.state.read().await;
+    let task = s.task_details.get(&task_id);
+    let subtask_ids = task.map(|t| t.subtasks.clone()).unwrap_or_default();
+
+    let all_completed = !subtask_ids.is_empty() && subtask_ids.iter().all(|sub_id| {
+        s.task_details
+            .get(sub_id)
+            .map(|t| t.status == wws_protocol::TaskStatus::Completed || t.status == wws_protocol::TaskStatus::PendingReview)
+            .unwrap_or(false)
+    });
+
+    let subtask_results: Vec<serde_json::Value> = subtask_ids
+        .iter()
+        .map(|sub_id| {
+            let sub_task = s.task_details.get(sub_id);
+            let result_text = s.task_result_text.get(sub_id).cloned()
+                .or_else(|| s.task_results.get(sub_id).map(|a| a.content.clone()))
+                .unwrap_or_default();
+            serde_json::json!({
+                "subtask_id": sub_id,
+                "description": sub_task.map(|t| t.description.as_str()).unwrap_or(""),
+                "result_text": result_text,
+                "status": sub_task.map(|t| format!("{:?}", t.status)).unwrap_or_else(|| "Unknown".to_string()),
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "parent_task_id": task_id,
+        "all_completed": all_completed,
+        "subtask_results": subtask_results,
+    }))
 }
 
 async fn api_clarifications(State(web): State<WebState>) -> Json<serde_json::Value> {

@@ -530,6 +530,8 @@ body {
 }
 
 .data-table tr:hover td { background: rgba(232, 232, 240, 0.02); }
+.data-table tr.clickable-row { cursor: pointer; }
+.data-table tr.clickable-row:hover td { background: rgba(0, 229, 176, 0.06); }
 
 /* ── Log / mono areas ────────────────────── */
 .log-box {

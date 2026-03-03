@@ -1699,6 +1699,11 @@ impl WwsConnector {
                     state.mark_member_submitted_result(params.agent_id.as_str());
                     state.bump_tasks_processed(params.agent_id.as_str());
                     state.mark_member_seen(params.agent_id.as_str());
+                    // Store result text from artifact content (P2P propagation)
+                    if !params.artifact.content.trim().is_empty() {
+                        state.task_result_text.insert(params.task_id.clone(), params.artifact.content.clone());
+                    }
+                    state.task_results.insert(params.task_id.clone(), params.artifact.clone());
                     // Update holon status to Done on result submission
                     if let Some(holon) = state.active_holons.get_mut(&params.task_id) {
                         holon.status = HolonStatus::Done;
@@ -2998,92 +3003,102 @@ impl WwsConnector {
         }
     }
 
-    fn recompute_hierarchy_from_members(state: &mut ConnectorState, members: &[String]) {
-        if members.is_empty() {
-            return;
-        }
-
-        let swarm_size = members.len() as u64;
-        let mut sorted_agents = members.to_vec();
-        sorted_agents.sort();
-
+    pub(crate) fn recompute_hierarchy_from_members(state: &mut ConnectorState, members: &[String]) {
         state.agent_tiers.clear();
         state.agent_parents.clear();
         state.subordinates.clear();
 
-        let k = Self::dynamic_branching_factor(swarm_size) as usize;
-        let distribution = wws_hierarchy::PyramidAllocator::distribute(swarm_size, k as u64);
-        let tier_sizes: Vec<usize> = distribution.tiers.iter().map(|n| *n as usize).collect();
-        let levels = tier_sizes.len().max(1);
+        let swarm_size = members.len() as u64;
 
-        let mut offsets = Vec::with_capacity(levels + 1);
-        offsets.push(0usize);
-        for size in &tier_sizes {
-            let prev = *offsets.last().unwrap_or(&0);
-            offsets.push(prev + *size);
+        // Check for active tasks (Pending/InProgress/ProposalPhase/VotingPhase/PendingReview).
+        let has_active_tasks = state.task_details.values().any(|t| matches!(
+            t.status,
+            wws_protocol::TaskStatus::Pending
+            | wws_protocol::TaskStatus::InProgress
+            | wws_protocol::TaskStatus::ProposalPhase
+            | wws_protocol::TaskStatus::VotingPhase
+            | wws_protocol::TaskStatus::PendingReview
+        ));
+
+        if !has_active_tasks || members.is_empty() {
+            // Flat swarm: no hierarchy, all agents equal.
+            state.network_stats.hierarchy_depth = 0;
+            state.network_stats.total_agents = swarm_size;
+            state.my_tier = Tier::Executor;
+            state.network_stats.my_tier = Tier::Executor;
+            state.parent_id = None;
+            state.network_stats.parent_id = None;
+            state.network_stats.subordinate_count = 0;
+            state.current_layout = None;
+            return;
         }
 
-        for level in 0..levels {
-            let start = offsets[level];
-            let end = *offsets.get(level + 1).unwrap_or(&start);
-            for idx in start..end.min(sorted_agents.len()) {
-                let member_id = sorted_agents[idx].clone();
-                let tier = if levels == 1 {
-                    Tier::Executor
-                } else if level == (levels - 1) {
-                    Tier::Executor
-                } else if level == 0 {
-                    Tier::Tier1
-                } else if level == 1 {
-                    Tier::Tier2
-                } else {
-                    Tier::TierN((level + 1) as u32)
-                };
-                state.agent_tiers.insert(member_id, tier);
+        // Task-driven hierarchy: injectors become Tier1, everyone else is Executor.
+        let members_set: std::collections::HashSet<&String> = members.iter().collect();
+
+        let mut injectors: Vec<String> = state
+            .task_details
+            .values()
+            .filter(|t| matches!(
+                t.status,
+                wws_protocol::TaskStatus::Pending
+                | wws_protocol::TaskStatus::InProgress
+                | wws_protocol::TaskStatus::ProposalPhase
+                | wws_protocol::TaskStatus::VotingPhase
+                | wws_protocol::TaskStatus::PendingReview
+            ))
+            .filter_map(|t| t.injector_id.as_ref().map(|id| id.to_string()))
+            .filter(|id| members_set.contains(id))
+            .collect();
+        injectors.sort();
+        injectors.dedup();
+
+        // If no injectors found among active members, fall back to flat.
+        if injectors.is_empty() {
+            state.network_stats.hierarchy_depth = 0;
+            state.network_stats.total_agents = swarm_size;
+            state.my_tier = Tier::Executor;
+            state.network_stats.my_tier = Tier::Executor;
+            state.parent_id = None;
+            state.network_stats.parent_id = None;
+            state.network_stats.subordinate_count = 0;
+            state.current_layout = None;
+            return;
+        }
+
+        // Injectors are Tier1, everyone else is Executor.
+        for inj in &injectors {
+            state.agent_tiers.insert(inj.clone(), Tier::Tier1);
+        }
+
+        let mut executors: Vec<String> = members
+            .iter()
+            .filter(|id| !injectors.contains(id))
+            .cloned()
+            .collect();
+        executors.sort();
+
+        for exec in &executors {
+            state.agent_tiers.insert(exec.clone(), Tier::Executor);
+        }
+
+        // Round-robin assign executors as subordinates of Tier1 injectors.
+        if !executors.is_empty() {
+            for (i, exec) in executors.iter().enumerate() {
+                let parent = &injectors[i % injectors.len()];
+                state.agent_parents.insert(exec.clone(), parent.clone());
+                state
+                    .subordinates
+                    .entry(parent.clone())
+                    .or_default()
+                    .push(exec.clone());
             }
         }
 
-        for level in 1..levels {
-            let child_start = offsets[level];
-            let child_end = *offsets.get(level + 1).unwrap_or(&child_start);
-            let parent_start = offsets[level - 1];
-            let parent_end = *offsets.get(level).unwrap_or(&parent_start);
-            let parent_count = parent_end.saturating_sub(parent_start);
-
-            if parent_count == 0 {
-                continue;
-            }
-
-            for child_idx in child_start..child_end.min(sorted_agents.len()) {
-                let local_child_idx = child_idx.saturating_sub(child_start);
-                let mut parent_local_idx = local_child_idx / k.max(1);
-                if parent_local_idx >= parent_count {
-                    parent_local_idx = parent_count - 1;
-                }
-                let parent_idx = parent_start + parent_local_idx;
-                if let (Some(child_id), Some(parent_id)) =
-                    (sorted_agents.get(child_idx), sorted_agents.get(parent_idx))
-                {
-                    state
-                        .agent_parents
-                        .insert(child_id.clone(), parent_id.clone());
-                    state
-                        .subordinates
-                        .entry(parent_id.clone())
-                        .or_default()
-                        .push(child_id.clone());
-                }
-            }
-        }
-
-        state.network_stats.hierarchy_depth = levels as u32;
+        let depth = if executors.is_empty() { 1 } else { 2 };
+        state.network_stats.hierarchy_depth = depth;
         state.network_stats.total_agents = swarm_size;
-        state.current_layout = wws_hierarchy::PyramidAllocator::new(PyramidConfig {
-            branching_factor: k as u32,
-            max_depth: wws_protocol::MAX_HIERARCHY_DEPTH,
-        })
-        .compute_layout(swarm_size)
-        .ok();
+        state.current_layout = None;
 
         let my_id = state.agent_id.as_str().to_string();
         if let Some(my_tier) = state.agent_tiers.get(&my_id).copied() {

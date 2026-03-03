@@ -282,8 +282,81 @@ function DeliberationTab({ taskId, agents }) {
   )
 }
 
+// ── Results tab ──────────────────────────
+function ResultsTab({ taskId, taskTrace }) {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!taskId) return
+    setLoading(true)
+    api.subtaskResults(taskId).then(setData).catch(() => setData(null)).finally(() => setLoading(false))
+  }, [taskId])
+
+  if (loading) return <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>Loading results...</div>
+
+  // Show the task's own result first
+  const hasOwnResult = taskTrace?.result_text || taskTrace?.result_artifact
+  const subtaskResults = data?.subtask_results || []
+
+  if (!hasOwnResult && subtaskResults.length === 0) {
+    return <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>No results yet.</div>
+  }
+
+  return (
+    <div>
+      {hasOwnResult && (
+        <div className="detail-section">
+          <div className="detail-section-title">Task Result</div>
+          <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.6, padding: '10px 14px', background: 'var(--surface-2)', borderRadius: 6, border: '1px solid var(--border)', whiteSpace: 'pre-wrap', maxHeight: 400, overflow: 'auto' }}>
+            {taskTrace.result_text || taskTrace.result_artifact?.content || '(artifact captured)'}
+          </div>
+          {taskTrace.result_artifact && (
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>
+              artifact: {taskTrace.result_artifact.artifact_id} | {taskTrace.result_artifact.content_type} | {taskTrace.result_artifact.size_bytes}B
+            </div>
+          )}
+        </div>
+      )}
+
+      {subtaskResults.length > 0 && (
+        <div className="detail-section">
+          <div className="detail-section-title">
+            Subtask Results {data?.all_completed ? '(all complete)' : '(in progress)'}
+          </div>
+          {subtaskResults.map(sr => (
+            <div key={sr.subtask_id} style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 6, padding: '10px 14px', marginBottom: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--teal)' }}>
+                  {sr.subtask_id.slice(0, 16)}...
+                </span>
+                <span className="badge" style={{
+                  background: sr.status === 'Completed' ? '#00e5b022' : '#ffaa0022',
+                  color: sr.status === 'Completed' ? '#00e5b0' : '#ffaa00',
+                  border: `1px solid ${sr.status === 'Completed' ? '#00e5b044' : '#ffaa0044'}`,
+                  fontSize: 10
+                }}>
+                  {sr.status}
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>{sr.description}</div>
+              {sr.result_text ? (
+                <div style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.5, whiteSpace: 'pre-wrap', maxHeight: 200, overflow: 'auto', padding: '6px 10px', background: 'var(--bg)', borderRadius: 4 }}>
+                  {sr.result_text}
+                </div>
+              ) : (
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', fontStyle: 'italic' }}>No result yet</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Overview tab ──────────────────────────
-function OverviewTab({ taskTrace, agents }) {
+function OverviewTab({ taskTrace, agents, onSubtaskClick }) {
   const dagRef = useRef(null)
   const dagNet = useRef(null)
   const [index, setIndex] = useState(0)
@@ -329,7 +402,7 @@ function OverviewTab({ taskTrace, agents }) {
       if (t.parent_task_id) edges.push({ from: t.parent_task_id, to: t.task_id, color: '#1a4a6a' })
     })
     if (dagNet.current) dagNet.current.destroy()
-    dagNet.current = new Network(
+    const net = new Network(
       dagRef.current,
       { nodes: new DataSet(nodes), edges: new DataSet(edges) },
       {
@@ -337,8 +410,18 @@ function OverviewTab({ taskTrace, agents }) {
         physics: false,
         edges: { smooth: true },
         nodes: { margin: 8 },
+        interaction: { hover: true },
       }
     )
+    net.on('click', params => {
+      if (params.nodes.length > 0) {
+        const clickedId = params.nodes[0]
+        if (clickedId !== root?.task_id && onSubtaskClick) {
+          onSubtaskClick(clickedId)
+        }
+      }
+    })
+    dagNet.current = net
     return () => { if (dagNet.current) dagNet.current.destroy() }
   }, [taskTrace])
 
@@ -406,11 +489,16 @@ function OverviewTab({ taskTrace, agents }) {
             </thead>
             <tbody>
               {descendants.map(t => (
-                <tr key={t.task_id}>
-                  <td>{t.task_id.slice(0, 10)}…</td>
+                <tr
+                  key={t.task_id}
+                  onClick={() => onSubtaskClick && onSubtaskClick(t.task_id)}
+                  style={{ cursor: 'pointer' }}
+                  className="clickable-row"
+                >
+                  <td style={{ color: 'var(--teal)' }}>{t.task_id.slice(0, 10)}...</td>
                   <td>{t.status}</td>
                   <td>{scrubId(t.assigned_to_name || 'unassigned')}</td>
-                  <td>{t.result_text || (t.has_result ? 'captured' : '—')}</td>
+                  <td>{t.result_text ? t.result_text.slice(0, 60) + (t.result_text.length > 60 ? '...' : '') : (t.has_result ? 'captured' : '—')}</td>
                 </tr>
               ))}
             </tbody>
@@ -421,7 +509,7 @@ function OverviewTab({ taskTrace, agents }) {
       {/* Task DAG */}
       {(descendants.length > 0 || taskTrace?.task) && (
         <div className="detail-section">
-          <div className="detail-section-title">Task DAG</div>
+          <div className="detail-section-title">Task DAG <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>(click node to drill down)</span></div>
           <div className="dag-container" ref={dagRef} />
         </div>
       )}
@@ -459,9 +547,125 @@ function OverviewTab({ taskTrace, agents }) {
   )
 }
 
+// ── Subtask detail view (when drilling into a subtask) ─
+function SubtaskDetailView({ subtaskId, agents }) {
+  const [trace, setTrace] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    setLoading(true)
+    api.taskTimeline(subtaskId).then(setTrace).catch(() => setTrace(null)).finally(() => setLoading(false))
+  }, [subtaskId])
+
+  if (loading) return <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>Loading subtask...</div>
+  if (!trace) return <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>Subtask not found.</div>
+
+  const agentsList = agents?.agents || []
+  const resolveDid = s => {
+    if (!s) return s
+    return String(s).replace(/did:swarm:[A-Za-z0-9]+/g, m => {
+      const found = agentsList.find(a => a.agent_id === m)
+      return found ? found.name : '[' + m.slice(-6) + ']'
+    })
+  }
+
+  return (
+    <div>
+      <div className="detail-meta" style={{ marginBottom: 16 }}>
+        <span>Status: <strong>{trace.task?.status || '—'}</strong></span>
+        <span>Assigned: <strong>{scrubId(trace.task?.assigned_to_name || 'unassigned')}</strong></span>
+      </div>
+
+      {trace.task?.description && (
+        <div className="detail-section">
+          <div className="detail-section-title">Description</div>
+          <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.5, padding: '8px 12px', background: 'var(--surface-2)', borderRadius: 6, border: '1px solid var(--border)' }}>
+            {trace.task.description}
+          </div>
+        </div>
+      )}
+
+      {(trace.timeline || []).length > 0 && (
+        <div className="detail-section">
+          <div className="detail-section-title">Timeline</div>
+          <div className="log-box">
+            {trace.timeline.map((e, i) => (
+              <div key={`${e.timestamp}-${i}`}>
+                <span style={{ color: 'var(--text-muted)' }}>[{e.timestamp}]</span>{' '}
+                <span style={{ color: 'var(--teal)' }}>{e.stage}</span>{' '}
+                {resolveDid(e.detail)}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {trace.result_text && (
+        <div className="detail-section">
+          <div className="detail-section-title">Result</div>
+          <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.6, padding: '10px 14px', background: 'var(--surface-2)', borderRadius: 6, border: '1px solid var(--border)', whiteSpace: 'pre-wrap', maxHeight: 400, overflow: 'auto' }}>
+            {trace.result_text}
+          </div>
+        </div>
+      )}
+
+      {trace.result_artifact && !trace.result_text && (
+        <div className="detail-section">
+          <div className="detail-section-title">Result Artifact</div>
+          <div className="log-box">
+            <div>artifact_id: {trace.result_artifact.artifact_id || '—'}</div>
+            <div>content_type: {trace.result_artifact.content_type || '—'}</div>
+            <div>size_bytes: {trace.result_artifact.size_bytes ?? '—'}</div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main export ───────────────────────────
 export default function TaskDetailPanel({ taskId, taskTrace, taskVoting, taskBallots, agents }) {
   const [activeTab, setActiveTab] = useState('overview')
+  const [navStack, setNavStack] = useState([]) // stack of subtask IDs for drill-down
+
+  // Reset nav stack when root task changes
+  useEffect(() => {
+    setNavStack([])
+    setActiveTab('overview')
+  }, [taskId])
+
+  const currentSubtask = navStack.length > 0 ? navStack[navStack.length - 1] : null
+
+  const handleSubtaskClick = (subtaskId) => {
+    setNavStack(prev => [...prev, subtaskId])
+  }
+
+  const handleBack = () => {
+    setNavStack(prev => prev.slice(0, -1))
+  }
+
+  // When viewing a subtask
+  if (currentSubtask) {
+    return (
+      <div>
+        <button
+          onClick={handleBack}
+          style={{
+            background: 'none', border: '1px solid var(--border)', borderRadius: 4,
+            color: 'var(--teal)', cursor: 'pointer', fontSize: 12, padding: '4px 10px',
+            marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6
+          }}
+        >
+          <span style={{ fontSize: 14 }}>←</span> Back to {navStack.length > 1 ? 'parent subtask' : 'root task'}
+        </button>
+        <div style={{ padding: '0 0 12px' }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Subtask ID</div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--teal)', wordBreak: 'break-all' }}>{currentSubtask}</div>
+        </div>
+        <SubtaskDetailView subtaskId={currentSubtask} agents={agents} />
+      </div>
+    )
+  }
 
   return (
     <div>
@@ -472,7 +676,7 @@ export default function TaskDetailPanel({ taskId, taskTrace, taskVoting, taskBal
 
       {/* Inline tabs */}
       <div style={{ display: 'flex', gap: 2, borderBottom: '1px solid var(--border)', marginBottom: 16, marginLeft: -20, marginRight: -20, paddingLeft: 20 }}>
-        {['overview', 'voting', 'deliberation'].map(tab => (
+        {['overview', 'results', 'voting', 'deliberation'].map(tab => (
           <button
             key={tab}
             className={`panel-tab${activeTab === tab ? ' active' : ''}`}
@@ -484,7 +688,10 @@ export default function TaskDetailPanel({ taskId, taskTrace, taskVoting, taskBal
       </div>
 
       {activeTab === 'overview' && (
-        <OverviewTab taskTrace={taskTrace} agents={agents} />
+        <OverviewTab taskTrace={taskTrace} agents={agents} onSubtaskClick={handleSubtaskClick} />
+      )}
+      {activeTab === 'results' && (
+        <ResultsTab taskId={taskId} taskTrace={taskTrace} />
       )}
       {activeTab === 'voting' && (
         <VotingTab taskVoting={taskVoting} taskBallots={taskBallots} agents={agents} />

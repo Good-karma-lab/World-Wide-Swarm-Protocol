@@ -39,7 +39,7 @@ use tokio::sync::RwLock;
 
 use wws_protocol::*;
 
-use crate::connector::{ConnectorState, SwarmRecord, TaskTimelineEvent, TaskVoteRequirement};
+use crate::connector::{ConnectorState, SwarmRecord, TaskTimelineEvent, TaskVoteRequirement, WwsConnector};
 
 const ACTIVE_MEMBER_STALENESS_SECS: u64 = 45;
 const PARTICIPATION_POLL_STALENESS_SECS: u64 = 180;
@@ -1063,55 +1063,6 @@ pub(crate) async fn handle_propose_plan(
     )
 }
 
-/// Aggregate results from all subtasks of a parent task.
-fn aggregate_subtask_results(state: &ConnectorState, parent_task_id: &str) -> Artifact {
-    use sha2::{Digest, Sha256};
-
-    let parent_task = state.task_details.get(parent_task_id);
-    let subtask_ids = parent_task
-        .map(|t| t.subtasks.clone())
-        .unwrap_or_default();
-
-    // Collect all subtask results
-    let mut subtask_results = Vec::new();
-    for subtask_id in &subtask_ids {
-        if let Some(result) = state.task_results.get(subtask_id) {
-            subtask_results.push(result.clone());
-        }
-    }
-
-    // Create aggregated content (concatenate content CIDs)
-    let aggregated_content = subtask_results
-        .iter()
-        .map(|r| format!("subtask:{} -> cid:{}", r.task_id, r.content_cid))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    // Compute content-addressed ID for aggregated result
-    let mut hasher = Sha256::new();
-    hasher.update(aggregated_content.as_bytes());
-    let content_cid = format!("{:x}", hasher.finalize());
-
-    // Compute Merkle hash (aggregate subtask merkle hashes)
-    let mut merkle_hasher = Sha256::new();
-    for result in &subtask_results {
-        merkle_hasher.update(result.merkle_hash.as_bytes());
-    }
-    let merkle_hash = format!("{:x}", merkle_hasher.finalize());
-
-    Artifact {
-        artifact_id: format!("{}-aggregated", parent_task_id),
-        task_id: parent_task_id.to_string(),
-        producer: state.agent_id.clone(),
-        content_cid,
-        merkle_hash,
-        content_type: "application/json; aggregated".to_string(),
-        size_bytes: aggregated_content.len() as u64,
-        created_at: chrono::Utc::now(),
-        content: aggregated_content,
-    }
-}
-
 /// Handle `swarm.submit_result` - submit a task execution result.
 pub(crate) async fn handle_submit_result(
     id: Option<String>,
@@ -1137,7 +1088,7 @@ pub(crate) async fn handle_submit_result(
     }
 
     // Add to Merkle DAG and update task state.
-    let (dag_nodes, parent_propagation_info) = {
+    let dag_nodes = {
         let mut state = state.write().await;
 
         if let Some(task) = state.task_details.get(&submission.task_id) {
@@ -1274,11 +1225,19 @@ pub(crate) async fn handle_submit_result(
 
         // Store the result for potential aggregation
         state.task_results.insert(submission.task_id.clone(), submission.artifact.clone());
-        let content_text = params
-            .get("content")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let content_text = {
+            let from_params = params
+                .get("content")
+                .and_then(|v| v.as_str())
+                .or_else(|| params.get("artifact").and_then(|a| a.get("content")).and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .to_string();
+            if from_params.trim().is_empty() {
+                submission.artifact.content.clone()
+            } else {
+                from_params
+            }
+        };
         if !content_text.trim().is_empty() {
             state
                 .task_result_text
@@ -1310,8 +1269,9 @@ pub(crate) async fn handle_submit_result(
                 .push(synth_msg);
         }
 
-        let propagation_info = if let Some(parent_id) = parent_task_id {
-            let parent_completed = state
+        // Log when all subtasks of a parent are done (agent must synthesize).
+        if let Some(parent_id) = parent_task_id {
+            let all_subtasks_done = state
                 .task_details
                 .get(&parent_id)
                 .map(|parent| {
@@ -1320,51 +1280,27 @@ pub(crate) async fn handle_submit_result(
                             state
                                 .task_details
                                 .get(sub_id)
-                                // PendingReview is terminal for aggregation — result was submitted, awaiting human review
                                 .map(|t| t.status == TaskStatus::Completed || t.status == TaskStatus::PendingReview)
                                 .unwrap_or(false)
                         })
                 })
                 .unwrap_or(false);
 
-            if parent_completed {
-                // Aggregate results from all subtasks
-                let aggregated_artifact = aggregate_subtask_results(&state, &parent_id);
-
-                if let Some(parent) = state.task_details.get_mut(&parent_id) {
-                    parent.status = TaskStatus::Completed;
-                }
-                state.task_set.remove(&parent_id);
-
-                // Store aggregated result
-                state.task_results.insert(parent_id.clone(), aggregated_artifact.clone());
-
+            if all_subtasks_done {
                 state.push_task_timeline_event(
                     &parent_id,
-                    "aggregated",
-                    format!("All subtasks completed; parent {} marked completed", parent_id),
+                    "subtasks_complete",
+                    format!("All subtasks completed for parent {}; awaiting agent synthesis", parent_id),
                     Some(submission.agent_id.to_string()),
                 );
                 state.push_log(
                     crate::tui::LogCategory::Task,
-                    format!("Parent task {} completed via subtask aggregation", parent_id),
+                    format!("All subtasks of {} completed — parent awaits agent synthesis", parent_id),
                 );
-
-                // Get grandparent for recursive propagation
-                let grandparent_id = state
-                    .task_details
-                    .get(&parent_id)
-                    .and_then(|p| p.parent_task_id.clone());
-
-                Some((parent_id, aggregated_artifact, grandparent_id))
-            } else {
-                None
             }
-        } else {
-            None
-        };
+        }
 
-        (nodes, propagation_info)
+        nodes
     };
 
     // Publish result to the results topic.
@@ -1382,40 +1318,6 @@ pub(crate) async fn handle_submit_result(
         if let Err(e) = network_handle.publish(&topic, data).await {
             tracing::warn!(error = %e, "Failed to publish result");
         }
-    }
-
-    // Hierarchical propagation: if parent was aggregated, submit aggregated result
-    // for the parent task as a normal result event. If a grandparent exists,
-    // recursive propagation will continue in the nested call.
-    if let Some((parent_id, aggregated_artifact, grandparent_id)) = parent_propagation_info {
-        let my_agent_id = {
-            let state = state.read().await;
-            state.agent_id.clone()
-        };
-
-        tracing::info!(
-            parent_task_id = %parent_id,
-            grandparent_task_id = ?grandparent_id,
-            "Propagating aggregated result up hierarchy"
-        );
-
-        // Recursively submit aggregated result to grandparent
-        let propagation_submission = ResultSubmissionParams {
-            task_id: parent_id.clone(),
-            agent_id: my_agent_id.clone(),
-            artifact: aggregated_artifact,
-            merkle_proof: vec![], // TODO: proper merkle proof
-            is_synthesis: true,
-        };
-
-        // Recursively call handle_submit_result for the parent task
-        let _ = Box::pin(handle_submit_result(
-            None,
-            &serde_json::to_value(&propagation_submission).unwrap_or_default(),
-            state,
-            network_handle,
-        ))
-        .await;
     }
 
     SwarmResponse::success(
@@ -2106,6 +2008,7 @@ pub(crate) async fn handle_inject_task(
     if let Some(crt) = params.get("confidence_review_threshold").and_then(|v| v.as_f64()) {
         task.confidence_review_threshold = crt as f32;
     }
+    task.injector_id = Some(state_guard.agent_id.clone());
     let task_id = task.task_id.clone();
 
     // Add task to the local task set (CRDT).
@@ -2133,15 +2036,16 @@ pub(crate) async fn handle_inject_task(
         ),
     );
 
-    let my_tier = state_guard.my_tier;
-    let my_level = my_tier.depth();
-    if my_tier != Tier::Executor && my_level == task.tier_level {
-        let expected_participants = state_guard
-            .active_member_ids(Duration::from_secs(ACTIVE_MEMBER_STALENESS_SECS))
-            .into_iter()
-            .filter(|id| state_guard.agent_tiers.get(id).copied().unwrap_or(Tier::Executor) == my_tier)
-            .count()
-            .max(1);
+    // Recompute hierarchy now that the task (with injector_id) is stored.
+    {
+        let active_members = state_guard.active_member_ids(Duration::from_secs(ACTIVE_MEMBER_STALENESS_SECS));
+        WwsConnector::recompute_hierarchy_from_members(&mut state_guard, &active_members);
+    }
+
+    // Always init RFP on the injecting node (no tier guard — injector IS Tier1 after rebuild).
+    {
+        let active_members = state_guard.active_member_ids(Duration::from_secs(ACTIVE_MEMBER_STALENESS_SECS));
+        let expected_participants = active_members.len().max(1);
 
         let mut rfp = wws_consensus::RfpCoordinator::new(
             task_id.clone(),
@@ -2163,8 +2067,8 @@ pub(crate) async fn handle_inject_task(
             state_guard.push_log(
                 crate::tui::LogCategory::Task,
                 format!(
-                    "Local RFP initialized for injected task {} (tier {:?}, expected participants: {})",
-                    task_id, my_tier, expected_participants
+                    "Local RFP initialized for injected task {} (expected participants: {})",
+                    task_id, expected_participants
                 ),
             );
         }
