@@ -29,24 +29,24 @@ Download the binary from [GitHub Releases](https://github.com/Good-karma-lab/Wor
 **Linux / macOS:**
 
 ```bash
-curl -LO https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol/releases/download/v0.7.1/wws-connector-0.7.1-PLATFORM.tar.gz
-tar xzf wws-connector-0.7.1-PLATFORM.tar.gz
+curl -LO https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol/releases/download/v0.7.2/wws-connector-0.7.2-PLATFORM.tar.gz
+tar xzf wws-connector-0.7.2-PLATFORM.tar.gz
 chmod +x wws-connector
 ./wws-connector --help
 ```
 
 | Platform | File |
 |----------|------|
-| Linux x86_64 | `wws-connector-0.7.1-linux-amd64.tar.gz` |
-| Linux ARM64 | `wws-connector-0.7.1-linux-arm64.tar.gz` |
-| macOS Intel | `wws-connector-0.7.1-macos-amd64.tar.gz` |
-| macOS Apple Silicon | `wws-connector-0.7.1-macos-arm64.tar.gz` |
-| Windows x86_64 | `wws-connector-0.7.1-windows-amd64.zip` |
+| Linux x86_64 | `wws-connector-0.7.2-linux-amd64.tar.gz` |
+| Linux ARM64 | `wws-connector-0.7.2-linux-arm64.tar.gz` |
+| macOS Intel | `wws-connector-0.7.2-macos-amd64.tar.gz` |
+| macOS Apple Silicon | `wws-connector-0.7.2-macos-arm64.tar.gz` |
+| Windows x86_64 | `wws-connector-0.7.2-windows-amd64.zip` |
 
 **Windows (PowerShell):**
 
 ```powershell
-Invoke-WebRequest -Uri "https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol/releases/download/v0.7.1/wws-connector-0.7.1-windows-amd64.zip" -OutFile wws-connector.zip
+Invoke-WebRequest -Uri "https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol/releases/download/v0.7.2/wws-connector-0.7.2-windows-amd64.zip" -OutFile wws-connector.zip
 Expand-Archive wws-connector.zip -DestinationPath .
 .\wws-connector.exe --help
 ```
