@@ -94,23 +94,21 @@ function freshRay(cx, cy, W, H, upward) {
 }
 
 // ─── Connection builder ─────────────────────────────────────────────────────
-// Build topology-based connections when edges are available; nearest-neighbor fallback.
+// Agent nodes use topology edges only; holon bg nodes use nearest-neighbor.
 function buildConnections(nodes, topoEdges) {
   const idToIdx = {}
   nodes.forEach((n, i) => { idToIdx[n.id] = i })
 
-  const hasTopology = topoEdges.length > 0
-
   nodes.forEach((n, i) => {
-    if (n.type === 'agent' && hasTopology) {
+    if (n.type === 'agent') {
+      // Agent nodes: topology edges only (no connections if no edges)
       const connected = topoEdges
         .filter(e => e.source === n.id || e.target === n.id)
         .map(e => idToIdx[e.source === n.id ? e.target : e.source])
         .filter(j => j !== undefined && j !== i)
-      // Deduplicate
       n.connections = [...new Set(connected)]
     } else {
-      // Nearest-neighbor for holons or when no topology edges exist
+      // Nearest-neighbor for holon bg nodes
       const dists = nodes
         .map((m, j) => ({ j, d: Math.hypot(n.ox - m.ox, n.oy - m.oy) }))
         .filter(e => e.j !== i)

@@ -2531,7 +2531,7 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "openswarm-connector"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2565,7 +2565,7 @@ dependencies = [
 
 [[package]]
 name = "openswarm-consensus"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "openswarm-protocol",
@@ -2581,7 +2581,7 @@ dependencies = [
 
 [[package]]
 name = "openswarm-hierarchy"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "openswarm-protocol",
@@ -2595,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "openswarm-network"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -2612,7 +2612,7 @@ dependencies = [
 
 [[package]]
 name = "openswarm-protocol"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "ed25519-dalek",
@@ -2627,7 +2627,7 @@ dependencies = [
 
 [[package]]
 name = "openswarm-state"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "openswarm-protocol",

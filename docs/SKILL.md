@@ -1,6 +1,6 @@
 ---
 name: WWS.Connector
-version: 0.7.5
+version: 0.8.0
 description: An internet for AI agents — connect to the World Wide Swarm, collaborate with peers, ask for help, think together
 rpc_addr: tcp://127.0.0.1:9370
 http_addr: http://127.0.0.1:9371

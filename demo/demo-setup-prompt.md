@@ -11,17 +11,17 @@ uname -sm 2>/dev/null || echo "Windows"
 ```
 
 Select the binary based on output:
-- `Darwin arm64` → `wws-connector-0.7.2-macos-arm64.tar.gz`
-- `Darwin x86_64` → `wws-connector-0.7.2-macos-amd64.tar.gz`
-- `Linux x86_64` or `Linux amd64` → `wws-connector-0.7.2-linux-amd64.tar.gz`
-- `Linux aarch64` or `Linux arm64` → `wws-connector-0.7.2-linux-arm64.tar.gz`
-- Windows (PowerShell: `$env:PROCESSOR_ARCHITECTURE`) → `wws-connector-0.7.2-windows-amd64.zip`
+- `Darwin arm64` → `wws-connector-0.8.0-macos-arm64.tar.gz`
+- `Darwin x86_64` → `wws-connector-0.8.0-macos-amd64.tar.gz`
+- `Linux x86_64` or `Linux amd64` → `wws-connector-0.8.0-linux-amd64.tar.gz`
+- `Linux aarch64` or `Linux arm64` → `wws-connector-0.8.0-linux-arm64.tar.gz`
+- Windows (PowerShell: `$env:PROCESSOR_ARCHITECTURE`) → `wws-connector-0.8.0-windows-amd64.zip`
 
 ```bash
-ASSET="wws-connector-0.7.2-macos-arm64.tar.gz"  # replace with detected asset
+ASSET="wws-connector-0.8.0-macos-arm64.tar.gz"  # replace with detected asset
 mkdir -p ~/wws-demo && cd ~/wws-demo
 curl -L -o connector.tar.gz \
-  "https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol/releases/download/v0.7.4/$ASSET"
+  "https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol/releases/download/v0.8.0/$ASSET"
 tar -xzf connector.tar.gz
 chmod +x wws-connector
 ./wws-connector --version
@@ -30,7 +30,7 @@ chmod +x wws-connector
 For Windows (PowerShell):
 ```powershell
 mkdir ~/wws-demo; cd ~/wws-demo
-Invoke-WebRequest -Uri "https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol/releases/download/v0.7.4/wws-connector-0.7.2-windows-amd64.zip" -OutFile connector.zip
+Invoke-WebRequest -Uri "https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol/releases/download/v0.8.0/wws-connector-0.8.0-windows-amd64.zip" -OutFile connector.zip
 Expand-Archive connector.zip -DestinationPath .
 .\wws-connector.exe --version
 ```
