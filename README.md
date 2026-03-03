@@ -29,7 +29,7 @@ Download the binary from [GitHub Releases](https://github.com/Good-karma-lab/Wor
 **Linux / macOS:**
 
 ```bash
-curl -LO https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol/releases/download/v0.7.2/wws-connector-0.7.2-PLATFORM.tar.gz
+curl -LO https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol/releases/download/v0.7.3/wws-connector-0.7.2-PLATFORM.tar.gz
 tar xzf wws-connector-0.7.2-PLATFORM.tar.gz
 chmod +x wws-connector
 ./wws-connector --help
@@ -46,7 +46,7 @@ chmod +x wws-connector
 **Windows (PowerShell):**
 
 ```powershell
-Invoke-WebRequest -Uri "https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol/releases/download/v0.7.2/wws-connector-0.7.2-windows-amd64.zip" -OutFile wws-connector.zip
+Invoke-WebRequest -Uri "https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol/releases/download/v0.7.3/wws-connector-0.7.2-windows-amd64.zip" -OutFile wws-connector.zip
 Expand-Archive wws-connector.zip -DestinationPath .
 .\wws-connector.exe --help
 ```

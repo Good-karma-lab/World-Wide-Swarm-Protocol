@@ -93,12 +93,41 @@ function freshRay(cx, cy, W, H, upward) {
   }
 }
 
+// ─── Connection builder ─────────────────────────────────────────────────────
+// Build topology-based connections when edges are available; nearest-neighbor fallback.
+function buildConnections(nodes, topoEdges) {
+  const idToIdx = {}
+  nodes.forEach((n, i) => { idToIdx[n.id] = i })
+
+  const hasTopology = topoEdges.length > 0
+
+  nodes.forEach((n, i) => {
+    if (n.type === 'agent' && hasTopology) {
+      const connected = topoEdges
+        .filter(e => e.from === n.id || e.to === n.id)
+        .map(e => idToIdx[e.from === n.id ? e.to : e.from])
+        .filter(j => j !== undefined && j !== i)
+      // Deduplicate
+      n.connections = [...new Set(connected)]
+    } else {
+      // Nearest-neighbor for holons or when no topology edges exist
+      const dists = nodes
+        .map((m, j) => ({ j, d: Math.hypot(n.ox - m.ox, n.oy - m.oy) }))
+        .filter(e => e.j !== i)
+        .sort((a, b) => a.d - b.d)
+        .slice(0, 2 + Math.floor(Math.random() * 3))
+      n.connections = dists.map(e => e.j)
+    }
+  })
+}
+
 // ─── Node builder ──────────────────────────────────────────────────────────
 function buildNodes(W, H, apiAgents, apiHolons, apiTopology) {
   const cx = W / 2, cy = H / 2
   const nodes = []
 
   const topoNodes  = apiTopology?.nodes  || []
+  const topoEdges  = apiTopology?.edges  || []
   const agentList  = apiAgents?.agents   || []
   const holonList  = apiHolons           || []
 
@@ -111,28 +140,30 @@ function buildNodes(W, H, apiAgents, apiHolons, apiTopology) {
   const fgSrc = selfTopo ? [selfTopo, ...otherTopo] : otherTopo
   const FG_COUNT = fgSrc.length
 
-  const fgRadius = Math.min(W, H) * 0.33
+  // Elliptical orbit: fill the canvas regardless of aspect ratio
+  const fgRadiusX = W * 0.38
+  const fgRadiusY = H * 0.38
 
   fgSrc.forEach((tn, i) => {
     const agent = agentMap[tn.id] || {}
     const isSelf = tn.is_self || false
     const jitter = isSelf ? 0 : (hashId(tn.id + 'j') - 0.5) * 0.18
     const ang = (i / Math.max(FG_COUNT, 1)) * Math.PI * 2 - Math.PI * 0.5 + jitter
-    const rJitter = isSelf ? 0 : (hashId(tn.id + 'r') - 0.5) * fgRadius * 0.12
-    const r = fgRadius + rJitter
+    const rJitterX = isSelf ? 0 : (hashId(tn.id + 'rx') - 0.5) * fgRadiusX * 0.12
+    const rJitterY = isSelf ? 0 : (hashId(tn.id + 'ry') - 0.5) * fgRadiusY * 0.12
     const name = tn.name || agent.name || (tn.id || '').slice(-12)
     nodes.push({
       id: tn.id,
       type: 'agent',
       agentData: agent,
-      ox: cx + Math.cos(ang) * r,
-      oy: cy + Math.sin(ang) * r,
+      ox: cx + Math.cos(ang) * (fgRadiusX + rJitterX),
+      oy: cy + Math.sin(ang) * (fgRadiusY + rJitterY),
       x: cx, y: cy,
       phase: hashId(tn.id + 'ph') * Math.PI * 2,
       freq: 0.00032 + hashId(tn.id + 'fq') * 0.00020,
       size: isSelf ? 11 : 5.5 + hashId(tn.id + 'sz') * 3.0,
       brightness: isSelf ? 1.0 : 0.75 + hashId(tn.id + 'br') * 0.25,
-      pulseFreq: 0.0008 + hashId(tn.id + 'pf') * 0.0008,
+      pulseFreq: 0.00022 + hashId(tn.id + 'pf') * 0.00018,
       pulsePhase: hashId(tn.id + 'pp') * Math.PI * 2,
       pulse: 1,
       depth: 1.0,
@@ -165,7 +196,7 @@ function buildNodes(W, H, apiAgents, apiHolons, apiTopology) {
       freq: 0.00040 + hashId(h.task_id + 'fq') * 0.00030,
       size: 2.0 + hashId(h.task_id + 'sz') * 3.0,
       brightness: 0.35 + hashId(h.task_id + 'br') * 0.35,
-      pulseFreq: 0.0009 + hashId(h.task_id + 'pf') * 0.0010,
+      pulseFreq: 0.00025 + hashId(h.task_id + 'pf') * 0.00030,
       pulsePhase: hashId(h.task_id + 'pp') * Math.PI * 2,
       pulse: 1,
       depth: 0.3 + Math.random() * 0.5,
@@ -180,16 +211,19 @@ function buildNodes(W, H, apiAgents, apiHolons, apiTopology) {
     })
   })
 
-  nodes.forEach((n, i) => {
-    const dists = nodes
-      .map((m, j) => ({ j, d: Math.hypot(n.ox - m.ox, n.oy - m.oy) }))
-      .filter(e => e.j !== i)
-      .sort((a, b) => a.d - b.d)
-      .slice(0, 2 + Math.floor(Math.random() * 3))
-    n.connections = dists.map(e => e.j)
-  })
-
+  buildConnections(nodes, topoEdges)
   return nodes
+}
+
+// ─── Node status hue ───────────────────────────────────────────────────────
+// healthy → 220 (blue-white), degraded → 42 (amber), offline → 0 (coral-red)
+function nodeHue(n) {
+  if (n.type !== 'agent') return 220
+  const a = n.agentData
+  if (!a || typeof a.connected === 'undefined') return 220
+  if (a.connected === false) return 0
+  if (a.loop_active === false) return 42
+  return 220
 }
 
 // ─── Component ─────────────────────────────────────────────────────────────
@@ -206,19 +240,30 @@ export default function CosmicCanvas({ agents, holons, topology, onNodeClick }) 
   holonsRef.current   = holons
   topologyRef.current = topology
 
+  // ─── Screen-space position accounting for zoom+rotation ─────────────────
+  function screenPos(n, cx, cy, cameraZoom, rotAngle) {
+    const dx = n.x - cx
+    const dy = n.y - cy
+    const cosA = Math.cos(rotAngle)
+    const sinA = Math.sin(rotAngle)
+    return {
+      sx: cx + (cosA * dx - sinA * dy) * cameraZoom,
+      sy: cy + (sinA * dx + cosA * dy) * cameraZoom,
+    }
+  }
+
   const handleClick = useCallback((e) => {
     const st = stateRef.current
     if (!st) return
     const rect = e.currentTarget.getBoundingClientRect()
     const mx = e.clientX - rect.left
     const my = e.clientY - rect.top
-    const { nodes, cameraZoom, W, H } = st
+    const { nodes, cameraZoom, W, H, rotAngle } = st
     const cx = W / 2, cy = H / 2
 
     for (const n of nodes) {
       if (n.bornAlpha < 0.3) continue
-      const sx = (n.x - cx) * cameraZoom + cx
-      const sy = (n.y - cy) * cameraZoom + cy
+      const { sx, sy } = screenPos(n, cx, cy, cameraZoom, rotAngle)
       const sr = n.size * n.pulse * cameraZoom
       if (Math.hypot(mx - sx, my - sy) < Math.max(sr * 2.5, 14)) {
         if (n.type === 'agent' && onNodeClick) {
@@ -237,13 +282,12 @@ export default function CosmicCanvas({ agents, holons, topology, onNodeClick }) 
     const rect = e.currentTarget.getBoundingClientRect()
     const mx = e.clientX - rect.left
     const my = e.clientY - rect.top
-    const { nodes, cameraZoom, W, H } = st
+    const { nodes, cameraZoom, W, H, rotAngle } = st
     const cx = W / 2, cy = H / 2
     let hit = false
     for (const n of nodes) {
       if (n.bornAlpha < 0.3) continue
-      const sx = (n.x - cx) * cameraZoom + cx
-      const sy = (n.y - cy) * cameraZoom + cy
+      const { sx, sy } = screenPos(n, cx, cy, cameraZoom, rotAngle)
       const sr = n.size * n.pulse * cameraZoom
       if (Math.hypot(mx - sx, my - sy) < Math.max(sr * 2.5, 14)) { hit = true; break }
     }
@@ -270,7 +314,7 @@ export default function CosmicCanvas({ agents, holons, topology, onNodeClick }) 
     let frameT = 0, lastTs = null, startTs = null
     let rafId  = null
 
-    stateRef.current = { nodes, cameraZoom, W, H }
+    stateRef.current = { nodes, cameraZoom, W, H, rotAngle: 0 }
 
     function drawStars() {
       for (const s of stars) {
@@ -339,6 +383,8 @@ export default function CosmicCanvas({ agents, holons, topology, onNodeClick }) 
     }
 
     function drawEdges(connP) {
+      // Max alpha distance — canvas diagonal (no hard cutoff, alpha fades)
+      const maxDist = Math.hypot(W, H)
       const drawn = new Set()
       for (let i = 0; i < nodes.length; i++) {
         const n = nodes[i]
@@ -349,16 +395,16 @@ export default function CosmicCanvas({ agents, holons, topology, onNodeClick }) 
           const m = nodes[j]
           if (!m.born) continue
           const dist = Math.hypot(n.x - m.x, n.y - m.y)
-          if (dist > 260) continue
-          const str   = 1 - dist / 260
+          const str   = Math.max(0, 1 - dist / maxDist)
           const pulse = 0.5 + 0.5 * Math.sin(frameT * 0.0008 + i * 0.7 + j * 0.4)
           const ba    = Math.min(n.bornAlpha, m.bornAlpha)
-          const a     = str * pulse * 0.55 * connP * ba
+          const a     = str * pulse * 0.65 * connP * ba
+          if (a < 0.008) continue
           const tv    = (frameT * 0.0012 + i * 0.3) % 1
           const g     = ctx.createLinearGradient(n.x, n.y, m.x, m.y)
           g.addColorStop(0,                       `hsla(220,60%,80%,${a * 0.8})`)
           g.addColorStop(Math.max(0, tv - 0.12),  `hsla(220,60%,80%,${a * 0.3})`)
-          g.addColorStop(tv,                      `hsla(220,80%,98%,${a * 1.7})`)
+          g.addColorStop(tv,                      `hsla(220,80%,98%,${a * 1.8})`)
           g.addColorStop(Math.min(1, tv + 0.12),  `hsla(220,60%,80%,${a * 0.3})`)
           g.addColorStop(1,                       `hsla(215,55%,75%,${a * 0.8})`)
           ctx.save()
@@ -377,31 +423,33 @@ export default function CosmicCanvas({ agents, holons, topology, onNodeClick }) 
         if (n.bornAlpha <= 0.01) continue
         const a = n.bornAlpha
         const s = n.size * n.pulse
+        const h = nodeHue(n)
+        const saturation = h === 220 ? 60 : 80  // more saturated for alert states
 
         if (n.isSelf) {
           const haloR  = s * 9 + 4 * Math.sin(frameT * 0.0015)
           const haloA  = 0.25 + 0.15 * Math.sin(frameT * 0.0012)
           ctx.save()
-          ctx.strokeStyle = `hsla(220,70%,92%,${a * haloA})`
+          ctx.strokeStyle = `hsla(${h},70%,92%,${a * haloA})`
           ctx.lineWidth   = 1.5
-          ctx.shadowColor = `hsla(220,80%,95%,${a * 0.5})`
+          ctx.shadowColor = `hsla(${h},80%,95%,${a * 0.5})`
           ctx.shadowBlur  = 12
           ctx.beginPath(); ctx.arc(n.x, n.y, haloR, 0, Math.PI * 2); ctx.stroke()
           ctx.restore()
         }
 
         const g1 = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, s * 6)
-        g1.addColorStop(0,   `hsla(220,60%,92%,${a * n.brightness * 0.9})`)
-        g1.addColorStop(0.3, `hsla(215,55%,75%,${a * n.brightness * 0.38})`)
-        g1.addColorStop(0.7, `hsla(210,50%,60%,${a * n.brightness * 0.10})`)
+        g1.addColorStop(0,   `hsla(${h},${saturation}%,92%,${a * n.brightness * 0.9})`)
+        g1.addColorStop(0.3, `hsla(${h - 5},55%,75%,${a * n.brightness * 0.38})`)
+        g1.addColorStop(0.7, `hsla(${h - 10},50%,60%,${a * n.brightness * 0.10})`)
         g1.addColorStop(1,   'transparent')
         ctx.fillStyle = g1
         ctx.beginPath(); ctx.arc(n.x, n.y, s * 6, 0, Math.PI * 2); ctx.fill()
 
         const g2 = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, s)
-        g2.addColorStop(0,   `hsla(230,40%,98%,${a})`)
-        g2.addColorStop(0.5, `hsla(220,50%,85%,${a * 0.8})`)
-        g2.addColorStop(1,   `hsla(215,45%,70%,0)`)
+        g2.addColorStop(0,   `hsla(${h + 10},40%,98%,${a})`)
+        g2.addColorStop(0.5, `hsla(${h},50%,85%,${a * 0.8})`)
+        g2.addColorStop(1,   `hsla(${h - 5},45%,70%,0)`)
         ctx.fillStyle = g2
         ctx.beginPath(); ctx.arc(n.x, n.y, s, 0, Math.PI * 2); ctx.fill()
       }
@@ -550,7 +598,9 @@ export default function CosmicCanvas({ agents, holons, topology, onNodeClick }) 
       }
 
       cameraZoom += (cameraTargetZoom - cameraZoom) * 0.055
-      stateRef.current = { nodes, cameraZoom, W, H }
+
+      const rotAngle = phaseNum === 3 ? frameT * 0.000028 : 0
+      stateRef.current = { nodes, cameraZoom, W, H, rotAngle }
 
       for (const n of nodes) {
         if (n.born) {
@@ -576,7 +626,7 @@ export default function CosmicCanvas({ agents, holons, topology, onNodeClick }) 
       ctx.save()
       ctx.translate(cx, cy)
       ctx.scale(cameraZoom, cameraZoom)
-      if (phaseNum === 3) ctx.rotate(frameT * 0.000028)
+      if (phaseNum === 3) ctx.rotate(rotAngle)
       ctx.translate(-cx, -cy)
       drawRays(rayGA)
       drawParticles(ptclGA)
@@ -585,7 +635,6 @@ export default function CosmicCanvas({ agents, holons, topology, onNodeClick }) 
       drawNodes()
       ctx.restore()
 
-      const rotAngle = phaseNum === 3 ? frameT * 0.000028 : 0
       drawLabels(labelP, rotAngle)
       drawCentralGlow(cameraZoom)
 
@@ -607,7 +656,7 @@ export default function CosmicCanvas({ agents, holons, topology, onNodeClick }) 
       neb   = buildNebula(W, H)
       stars = buildStars(W, H)
       nodes = buildNodes(W, H, agentsRef.current, holonsRef.current, topologyRef.current)
-      stateRef.current = { nodes, cameraZoom, W, H }
+      stateRef.current = { nodes, cameraZoom, W, H, rotAngle: 0 }
     }
     window.addEventListener('resize', onResize)
 
@@ -655,17 +704,8 @@ export default function CosmicCanvas({ agents, holons, topology, onNodeClick }) 
       }
     }
 
-    // Rebuild index-based connections only when the set changed
-    if (changed) {
-      nodes.forEach((n, i) => {
-        const dists = nodes
-          .map((m, j) => ({ j, d: Math.hypot(n.ox - m.ox, n.oy - m.oy) }))
-          .filter(e => e.j !== i)
-          .sort((a, b) => a.d - b.d)
-          .slice(0, 2 + Math.floor(Math.random() * 3))
-        n.connections = dists.map(e => e.j)
-      })
-    }
+    // Always rebuild connections so topology edges stay current
+    buildConnections(nodes, topology?.edges || [])
   }, [agents, holons, topology])
 
   return (
