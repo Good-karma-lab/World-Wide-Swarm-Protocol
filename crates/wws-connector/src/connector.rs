@@ -3800,4 +3800,51 @@ mod tests {
         // Constant exists and is accessible (compilation test)
         let _ = DEFAULT_BOOTSTRAP_PEERS.len();
     }
+
+    #[tokio::test]
+    async fn resolve_all_bootstrap_peers_with_cli_peers_only() {
+        let peer_id = PeerId::random();
+        let cli_peers = vec![format!("/ip4/10.0.0.1/tcp/4001/p2p/{}", peer_id)];
+        let result = WwsConnector::resolve_all_bootstrap_peers(
+            &cli_peers,
+            "nonexistent.invalid",
+            true,
+        ).await;
+        assert_eq!(result.len(), 1);
+        assert!(result[0].contains(&peer_id.to_string()));
+    }
+
+    #[tokio::test]
+    async fn resolve_all_bootstrap_peers_deduplicates() {
+        let peer_id = PeerId::random();
+        let addr = format!("/ip4/10.0.0.1/tcp/4001/p2p/{}", peer_id);
+        let cli_peers = vec![addr.clone(), addr.clone()];
+        let result = WwsConnector::resolve_all_bootstrap_peers(
+            &cli_peers,
+            "nonexistent.invalid",
+            true,
+        ).await;
+        assert_eq!(result.len(), 1, "Should deduplicate identical addresses");
+    }
+
+    #[tokio::test]
+    async fn resolve_all_bootstrap_peers_skips_empty() {
+        let cli_peers: Vec<String> = vec!["".to_string(), "  ".to_string()];
+        let result = WwsConnector::resolve_all_bootstrap_peers(
+            &cli_peers,
+            "nonexistent.invalid",
+            true,
+        ).await;
+        assert!(result.is_empty(), "Should skip empty/whitespace entries");
+    }
+
+    #[tokio::test]
+    async fn resolve_all_bootstrap_peers_dns_failure_is_graceful() {
+        let result = WwsConnector::resolve_all_bootstrap_peers(
+            &[],
+            "nonexistent.invalid",
+            true,
+        ).await;
+        assert!(result.is_empty(), "DNS failure should be graceful, returning empty list");
+    }
 }
