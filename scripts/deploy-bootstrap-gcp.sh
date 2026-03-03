@@ -27,6 +27,8 @@ IMAGE_FAMILY="ubuntu-2404-lts-amd64"
 IMAGE_PROJECT="ubuntu-os-cloud"
 RELEASE_VERSION="0.8.0"
 RELEASE_URL="https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol/releases/download/v${RELEASE_VERSION}/wws-connector-${RELEASE_VERSION}-linux-amd64.tar.gz"
+WEBAPP_URL="https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol/releases/download/v${RELEASE_VERSION}/webapp-dist-${RELEASE_VERSION}.tar.gz"
+WEBAPP_DIR="/usr/local/share/wws-connector/webapp/dist"
 P2P_PORT="9000"
 HTTP_PORT="9371"
 RPC_PORT="9370"
@@ -216,6 +218,8 @@ deploy_connector() {
 set -euo pipefail
 
 RELEASE_URL="__RELEASE_URL__"
+WEBAPP_URL="__WEBAPP_URL__"
+WEBAPP_DIR="__WEBAPP_DIR__"
 P2P_PORT="__P2P_PORT__"
 HTTP_PORT="__HTTP_PORT__"
 RPC_PORT="__RPC_PORT__"
@@ -234,6 +238,19 @@ sudo mv wws-connector /usr/local/bin/
 # Verify
 echo "Binary installed:"
 /usr/local/bin/wws-connector --help | head -3
+
+# Download and install webapp dashboard files
+echo "Downloading webapp dashboard..."
+if curl -fLO "$WEBAPP_URL" 2>/dev/null; then
+    sudo mkdir -p "$WEBAPP_DIR"
+    sudo tar xzf webapp-dist-*.tar.gz -C "$WEBAPP_DIR" --strip-components=1 2>/dev/null \
+        || sudo tar xzf webapp-dist-*.tar.gz -C "$WEBAPP_DIR" 2>/dev/null \
+        || echo "Warning: webapp archive extraction failed, dashboard may not work"
+    echo "Webapp installed to $WEBAPP_DIR"
+else
+    echo "Warning: webapp download failed (not in release?), dashboard will show 404"
+    sudo mkdir -p "$WEBAPP_DIR"
+fi
 
 # Create systemd service
 sudo tee /etc/systemd/system/wws-connector.service > /dev/null <<SERVICE_EOF
@@ -255,6 +272,7 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 Environment=RUST_LOG=info
+Environment=OPENSWARM_WEBAPP_DIR=${WEBAPP_DIR}
 
 [Install]
 WantedBy=multi-user.target
@@ -282,6 +300,8 @@ REMOTE_EOF
 
     # Substitute variables
     DEPLOY_SCRIPT="${DEPLOY_SCRIPT//__RELEASE_URL__/$RELEASE_URL}"
+    DEPLOY_SCRIPT="${DEPLOY_SCRIPT//__WEBAPP_URL__/$WEBAPP_URL}"
+    DEPLOY_SCRIPT="${DEPLOY_SCRIPT//__WEBAPP_DIR__/$WEBAPP_DIR}"
     DEPLOY_SCRIPT="${DEPLOY_SCRIPT//__P2P_PORT__/$P2P_PORT}"
     DEPLOY_SCRIPT="${DEPLOY_SCRIPT//__HTTP_PORT__/$HTTP_PORT}"
     DEPLOY_SCRIPT="${DEPLOY_SCRIPT//__RPC_PORT__/$RPC_PORT}"
@@ -303,14 +323,16 @@ extract_peer_id() {
         --project="$PROJECT_ID" \
         --format="get(networkInterfaces[0].accessConfigs[0].natIP)")
 
-    # Query identity via RPC on the VM itself (RPC may not be exposed externally)
+    # Query identity via HTTP API (avoids SSH JSON quoting issues with RPC)
     RESPONSE=$(gcloud compute ssh "$VM_NAME" --zone="$ZONE" --project="$PROJECT_ID" \
-        --command="curl -s -X POST http://127.0.0.1:${RPC_PORT} \
-            -H 'Content-Type: application/json' \
-            -d '{\"jsonrpc\":\"2.0\",\"method\":\"swarm.get_identity\",\"params\":{},\"id\":\"1\",\"signature\":\"\"}'" 2>/dev/null)
+        --command="curl -s http://127.0.0.1:${HTTP_PORT}/api/identity" 2>/dev/null)
 
-    AGENT_DID=$(echo "$RESPONSE" | grep -o '"agent_id":"[^"]*"' | head -1 | cut -d'"' -f4)
-    PEER_ID=$(echo "$AGENT_DID" | sed 's/did:swarm://')
+    # Try peer_id field first, then agent_id
+    PEER_ID=$(echo "$RESPONSE" | grep -o '"peer_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+    if [ -z "$PEER_ID" ]; then
+        AGENT_DID=$(echo "$RESPONSE" | grep -o '"agent_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+        PEER_ID=$(echo "$AGENT_DID" | sed 's/did:swarm://')
+    fi
 
     if [ -z "$PEER_ID" ]; then
         err "Could not extract peer ID from bootstrap node"
