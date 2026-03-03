@@ -84,6 +84,12 @@ pub struct NetworkConfig {
     /// Bootstrap peer multiaddresses.
     #[serde(default)]
     pub bootstrap_peers: Vec<String>,
+    /// DNS domain for TXT-based bootstrap peer discovery.
+    #[serde(default = "default_bootstrap_domain")]
+    pub bootstrap_domain: String,
+    /// Disable built-in default bootstrap peers (hardcoded in binary).
+    #[serde(default)]
+    pub no_default_bootstrap: bool,
     /// Whether mDNS local discovery is enabled. Enabled by default for zero-conf LAN discovery.
     #[serde(default = "default_true")]
     pub mdns_enabled: bool,
@@ -188,6 +194,9 @@ pub struct SwarmConfig {
 fn default_listen_addr() -> String {
     "/ip4/0.0.0.0/tcp/0".to_string()
 }
+fn default_bootstrap_domain() -> String {
+    "worldwideswarm.net".to_string()
+}
 fn default_true() -> bool {
     true
 }
@@ -282,6 +291,8 @@ impl Default for NetworkConfig {
         Self {
             listen_addr: default_listen_addr(),
             bootstrap_peers: Vec::new(),
+            bootstrap_domain: default_bootstrap_domain(),
+            no_default_bootstrap: false,
             mdns_enabled: true,
             idle_connection_timeout_secs: default_idle_timeout(),
             bootstrap_mode: false,
@@ -393,6 +404,12 @@ impl ConnectorConfig {
         if let Ok(val) = std::env::var("WWS_BOOTSTRAP_PEERS") {
             self.network.bootstrap_peers = val.split(',').map(|s| s.trim().to_string()).collect();
         }
+        if let Ok(val) = std::env::var("WWS_BOOTSTRAP_DOMAIN") {
+            self.network.bootstrap_domain = val;
+        }
+        if std::env::var("WWS_NO_DEFAULT_BOOTSTRAP").is_ok() {
+            self.network.no_default_bootstrap = true;
+        }
         if let Ok(val) = std::env::var("WWS_SWARM_ID") {
             self.swarm.swarm_id = val;
         }
@@ -433,5 +450,11 @@ mod config_tests {
     fn network_config_default_enables_mdns() {
         let config = NetworkConfig::default();
         assert!(config.mdns_enabled, "mDNS should be enabled by default for zero-conf discovery");
+    }
+
+    #[test]
+    fn network_config_default_bootstrap_domain() {
+        let config = NetworkConfig::default();
+        assert_eq!(config.bootstrap_domain, "worldwideswarm.net");
     }
 }
