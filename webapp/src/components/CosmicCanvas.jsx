@@ -131,43 +131,49 @@ function buildNodes(W, H, apiAgents, apiHolons, apiTopology) {
   const agentList  = apiAgents?.agents   || []
   const holonList  = apiHolons           || []
 
-  const agentMap = {}
-  agentList.forEach(a => { agentMap[a.agent_id] = a })
+  // Build lookup from topology for is_self detection
+  const topoMap = {}
+  topoNodes.forEach(tn => { topoMap[tn.id] = tn })
 
-  const selfTopo  = topoNodes.find(n => n.is_self)
-  const otherTopo = topoNodes.filter(n => !n.is_self)
+  // Use agents list as primary source (returns ALL known swarm members)
+  const selfAgent = agentList.find(a => a.is_self || topoMap[a.agent_id]?.is_self)
+  const otherAgents = agentList.filter(a => a !== selfAgent)
 
-  const fgSrc = selfTopo ? [selfTopo, ...otherTopo] : otherTopo
+  const fgSrc = selfAgent ? [selfAgent, ...otherAgents] : agentList
   const FG_COUNT = fgSrc.length
 
-  // Elliptical orbit: fill the canvas regardless of aspect ratio
-  const fgRadiusX = W * 0.38
-  const fgRadiusY = H * 0.38
+  // Elliptical orbit — radii kept safe so nodes never leave the canvas
+  // even with per-node wobble (±30px) and rJitter (±12%).
+  // fgRadiusX: 30% of width leaves ≥200px margin on a 1460px canvas.
+  // fgRadiusY: 28% of height keeps max bottom at ~520px on a 630px canvas,
+  //            and self-node halo (103px) stays ≥36px from the top edge.
+  const fgRadiusX = W * 0.30
+  const fgRadiusY = H * 0.28
 
-  fgSrc.forEach((tn, i) => {
-    const agent = agentMap[tn.id] || {}
-    const isSelf = tn.is_self || false
-    const jitter = isSelf ? 0 : (hashId(tn.id + 'j') - 0.5) * 0.18
+  fgSrc.forEach((ag, i) => {
+    const tn = topoMap[ag.agent_id] || {}
+    const isSelf = ag.is_self || tn.is_self || false
+    const jitter = isSelf ? 0 : (hashId(ag.agent_id + 'j') - 0.5) * 0.18
     const ang = (i / Math.max(FG_COUNT, 1)) * Math.PI * 2 - Math.PI * 0.5 + jitter
-    const rJitterX = isSelf ? 0 : (hashId(tn.id + 'rx') - 0.5) * fgRadiusX * 0.12
-    const rJitterY = isSelf ? 0 : (hashId(tn.id + 'ry') - 0.5) * fgRadiusY * 0.12
-    const name = tn.name || agent.name || (tn.id || '').slice(-12)
+    const rJitterX = isSelf ? 0 : (hashId(ag.agent_id + 'rx') - 0.5) * fgRadiusX * 0.12
+    const rJitterY = isSelf ? 0 : (hashId(ag.agent_id + 'ry') - 0.5) * fgRadiusY * 0.12
+    const name = ag.name || tn.name || (ag.agent_id || '').replace('did:swarm:', '').slice(0, 14)
     nodes.push({
-      id: tn.id,
+      id: ag.agent_id,
       type: 'agent',
-      agentData: agent,
+      agentData: ag,
       ox: cx + Math.cos(ang) * (fgRadiusX + rJitterX),
       oy: cy + Math.sin(ang) * (fgRadiusY + rJitterY),
       x: cx, y: cy,
-      phase: hashId(tn.id + 'ph') * Math.PI * 2,
-      freq: 0.00032 + hashId(tn.id + 'fq') * 0.00020,
-      size: isSelf ? 11 : 5.5 + hashId(tn.id + 'sz') * 3.0,
-      brightness: isSelf ? 1.0 : 0.75 + hashId(tn.id + 'br') * 0.25,
-      pulseFreq: 0.00022 + hashId(tn.id + 'pf') * 0.00018,
-      pulsePhase: hashId(tn.id + 'pp') * Math.PI * 2,
+      phase: hashId(ag.agent_id + 'ph') * Math.PI * 2,
+      freq: 0.00032 + hashId(ag.agent_id + 'fq') * 0.00020,
+      size: isSelf ? 11 : 5.5 + hashId(ag.agent_id + 'sz') * 3.0,
+      brightness: isSelf ? 1.0 : 0.75 + hashId(ag.agent_id + 'br') * 0.25,
+      pulseFreq: 0.00022 + hashId(ag.agent_id + 'pf') * 0.00018,
+      pulsePhase: hashId(ag.agent_id + 'pp') * Math.PI * 2,
       pulse: 1,
       depth: 1.0,
-      spawnAt: isSelf ? 0.05 : 0.08 + (i / Math.max(FG_COUNT, 1)) * 0.60 + (hashId(tn.id + 'sp') - 0.5) * 0.04,
+      spawnAt: isSelf ? 0.05 : 0.08 + (i / Math.max(FG_COUNT, 1)) * 0.60 + (hashId(ag.agent_id + 'sp') - 0.5) * 0.04,
       born: false,
       bornAlpha: 0,
       labelAlpha: 0,
@@ -599,7 +605,10 @@ export default function CosmicCanvas({ agents, holons, topology, onNodeClick }) 
 
       cameraZoom += (cameraTargetZoom - cameraZoom) * 0.055
 
-      const rotAngle = phaseNum === 3 ? frameT * 0.000028 : 0
+      // No scene-level rotation: canvas ctx.rotate() moves horizontal nodes into
+      // vertical positions where they exceed canvas height and fly off-screen.
+      // Nodes stay animated via per-node wobble (n.x/y drift ±30px around ox/oy).
+      const rotAngle = 0
       stateRef.current = { nodes, cameraZoom, W, H, rotAngle }
 
       for (const n of nodes) {
@@ -626,7 +635,7 @@ export default function CosmicCanvas({ agents, holons, topology, onNodeClick }) 
       ctx.save()
       ctx.translate(cx, cy)
       ctx.scale(cameraZoom, cameraZoom)
-      if (phaseNum === 3) ctx.rotate(rotAngle)
+      // rotAngle is always 0; line kept for clarity (noop)
       ctx.translate(-cx, -cy)
       drawRays(rayGA)
       drawParticles(ptclGA)
