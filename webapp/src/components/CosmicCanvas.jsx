@@ -197,6 +197,15 @@ export default function CosmicCanvas({ agents, holons, topology, onNodeClick }) 
   const canvasRef = useRef(null)
   const stateRef  = useRef(null)
 
+  // Keep latest prop values accessible inside the one-time effect without
+  // causing it to re-run (and restart the intro animation).
+  const agentsRef   = useRef(agents)
+  const holonsRef   = useRef(holons)
+  const topologyRef = useRef(topology)
+  agentsRef.current   = agents
+  holonsRef.current   = holons
+  topologyRef.current = topology
+
   const handleClick = useCallback((e) => {
     const st = stateRef.current
     if (!st) return
@@ -252,7 +261,7 @@ export default function CosmicCanvas({ agents, holons, topology, onNodeClick }) 
 
     let stars   = buildStars(W, H)
     let neb     = buildNebula(W, H)
-    let nodes   = buildNodes(W, H, agents, holons, topology)
+    let nodes   = buildNodes(W, H, agentsRef.current, holonsRef.current, topologyRef.current)
     const ptcls = Array.from({ length: PARTICLE_N }, () => freshParticle(cx, cy, W, H))
     const rays  = Array.from({ length: RAY_N }, (_, i) => freshRay(cx, cy, W, H, i < 14))
     const bursts = []
@@ -597,7 +606,7 @@ export default function CosmicCanvas({ agents, holons, topology, onNodeClick }) 
       cx = W / 2; cy = H / 2
       neb   = buildNebula(W, H)
       stars = buildStars(W, H)
-      nodes = buildNodes(W, H, agents, holons, topology)
+      nodes = buildNodes(W, H, agentsRef.current, holonsRef.current, topologyRef.current)
       stateRef.current = { nodes, cameraZoom, W, H }
     }
     window.addEventListener('resize', onResize)
@@ -605,6 +614,57 @@ export default function CosmicCanvas({ agents, holons, topology, onNodeClick }) 
     return () => {
       cancelAnimationFrame(rafId)
       window.removeEventListener('resize', onResize)
+    }
+  }, []) // ← runs once; prop changes handled by the incremental effect below
+
+  // ─── Incremental node update ────────────────────────────────────────────
+  // When agents/holons/topology change, add new nodes (with spawn animation)
+  // and remove departed ones — without restarting the intro animation.
+  useEffect(() => {
+    const st = stateRef.current
+    if (!st) return
+    const { W, H, nodes } = st
+
+    const newNodes = buildNodes(W, H, agents, holons, topology)
+    const existingMap = new Map(nodes.map(n => [n.id, n]))
+    const incomingIds  = new Set(newNodes.map(n => n.id))
+    let changed = false
+
+    // Update existing nodes' data; add genuinely new nodes
+    for (const n of newNodes) {
+      const existing = existingMap.get(n.id)
+      if (existing) {
+        existing.agentData = n.agentData
+        existing.holonData = n.holonData
+        existing.label     = n.label
+      } else {
+        // New node: start invisible and fade in naturally
+        n.born      = true
+        n.bornAlpha = 0
+        n.labelAlpha = 0
+        nodes.push(n)
+        changed = true
+      }
+    }
+
+    // Remove nodes no longer in the swarm
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      if (!incomingIds.has(nodes[i].id)) {
+        nodes.splice(i, 1)
+        changed = true
+      }
+    }
+
+    // Rebuild index-based connections only when the set changed
+    if (changed) {
+      nodes.forEach((n, i) => {
+        const dists = nodes
+          .map((m, j) => ({ j, d: Math.hypot(n.ox - m.ox, n.oy - m.oy) }))
+          .filter(e => e.j !== i)
+          .sort((a, b) => a.d - b.d)
+          .slice(0, 2 + Math.floor(Math.random() * 3))
+        n.connections = dists.map(e => e.j)
+      })
     }
   }, [agents, holons, topology])
 
