@@ -46,6 +46,37 @@ pub enum TaskStatus {
     Failed,
     /// Task was rejected during verification
     Rejected,
+    /// Task result submitted but confidence delta exceeded review threshold.
+    PendingReview,
+}
+
+/// Tri-state of a spec-anchored deliverable (Moltbook insight #13).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DeliverableState {
+    Done,
+    Partial { note: String },
+    Skipped,
+}
+
+/// A single named deliverable item in a task spec (Moltbook insight #13).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Deliverable {
+    pub id: String,
+    pub description: String,
+    pub state: DeliverableState,
+}
+
+/// A clarification request from an agent to a task principal (Moltbook insight #20).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClarificationRequest {
+    pub id: String,
+    pub task_id: String,
+    pub requesting_agent: String,
+    pub principal_id: String,
+    pub question: String,
+    pub resolution: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub resolved_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// A task in the swarm hierarchy.
@@ -73,6 +104,15 @@ pub struct Task {
     pub knowledge_domains: Vec<String>,
     #[serde(default)]
     pub tools_available: Vec<String>,
+    /// Spec-anchored deliverable checklist (Moltbook insight #13).
+    #[serde(default)]
+    pub deliverables: Vec<Deliverable>,
+    /// Minimum coverage fraction for SucceededPartially to be accepted (0.0 = any, 1.0 = full).
+    #[serde(default)]
+    pub coverage_threshold: f32,
+    /// Confidence delta gate: if pre−post > threshold, task moves to PendingReview.
+    #[serde(default = "default_confidence_review_threshold")]
+    pub confidence_review_threshold: f32,
 }
 
 impl Task {
@@ -94,6 +134,9 @@ impl Task {
             backtrack_allowed: false,
             knowledge_domains: Vec::new(),
             tools_available: Vec::new(),
+            deliverables: Vec::new(),
+            coverage_threshold: 0.0,
+            confidence_review_threshold: 1.0,
         }
     }
 }
@@ -102,6 +145,10 @@ impl Default for Task {
     fn default() -> Self {
         Self::new(String::new(), 1, 0)
     }
+}
+
+fn default_confidence_review_threshold() -> f32 {
+    1.0
 }
 
 /// A High-Level Decomposition Plan proposed by a Tier-1 agent.
@@ -148,6 +195,7 @@ impl Plan {
 pub struct PlanSubtask {
     pub index: u32,
     pub description: String,
+    #[serde(default)]
     pub required_capabilities: Vec<String>,
     pub estimated_complexity: f64,
 }
@@ -376,6 +424,70 @@ impl SwarmInfo {
     }
 }
 
+/// A constraint conflict with provenance (Moltbook insights #2, #15).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstraintConflict {
+    pub constraint_a: String,
+    pub introduced_by_a: String,
+    pub constraint_b: String,
+    pub introduced_by_b: String,
+}
+
+/// Structured task outcome (Moltbook insight #2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TaskOutcome {
+    SucceededFully { artifact_id: String },
+    SucceededPartially { artifact_id: String, coverage_spec: String },
+    FailedHonestly { reason: FailureReason, duration_ms: u64 },
+    FailedSilently,
+}
+
+/// Detailed failure reasons for intelligent retry (Moltbook insight #2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FailureReason {
+    MissingCapabilities { required: Vec<String>, had: Vec<String> },
+    ContradictoryConstraints { conflict_graph: Vec<ConstraintConflict> },
+    InsufficientContext { missing_keys: Vec<String> },
+    ResourceExhausted { resource: String },
+    ExternalDependencyFailed { dependency: String },
+    TaskAmbiguous { ambiguity_description: String, proposed_resolution: Option<String> },
+}
+
+/// Commitment receipt with rich reversibility info (Moltbook insight #1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommitmentReceipt {
+    pub commitment_id: String,
+    pub deliverable_type: String,
+    pub evidence_hash: String,
+    pub confidence_delta: f64,
+    pub can_undo: bool,
+    pub rollback_cost: Option<String>,
+    pub rollback_window: Option<String>,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub commitment_state: CommitmentState,
+    pub task_id: String,
+    pub agent_id: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// State of a commitment receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CommitmentState {
+    Active,
+    /// Agent reports completion, awaiting external verification (Moltbook insight #14).
+    AgentFulfilled,
+    /// External verifier confirmed evidence_hash (Moltbook insight #14).
+    Verified,
+    /// Finalized, calibration updated (Moltbook insight #14).
+    Closed,
+    Expired,
+    Failed,
+    Disputed,
+    /// Legacy alias for backward-compat deserialisation.
+    #[serde(alias = "Fulfilled")]
+    Fulfilled,
+}
+
 // ── Holonic Swarm Types ──
 
 /// Status of a holonic board.
@@ -446,64 +558,6 @@ pub struct IrvRound {
     pub tallies: std::collections::HashMap<String, usize>,
     pub eliminated: Option<String>,
     pub continuing_candidates: Vec<String>,
-}
-
-/// Anti-bot verification challenge. Returned on first register_agent call.
-/// Agent must decode garbled obfuscated text and answer an arithmetic question.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerificationChallenge {
-    /// Unique code identifying this challenge (wws_verify_{hex})
-    pub code: String,
-    /// Garbled obfuscated challenge text containing an arithmetic question
-    pub challenge_text: String,
-    /// Expected integer answer (NOT sent to agent)
-    pub expected_answer: i64,
-    /// When this challenge was created
-    pub created_at: chrono::DateTime<chrono::Utc>,
-}
-
-impl VerificationChallenge {
-    /// Returns true if this challenge is older than ttl_secs seconds.
-    pub fn is_expired(&self, ttl_secs: i64) -> bool {
-        let age = chrono::Utc::now() - self.created_at;
-        age.num_seconds() > ttl_secs
-    }
-}
-
-/// Category of a direct P2P message.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MessageType {
-    Greeting,
-    Social,
-    Question,
-    Comment,
-    Broadcast,
-    Work,
-}
-
-impl From<&str> for MessageType {
-    fn from(s: &str) -> Self {
-        match s {
-            "greeting" => MessageType::Greeting,
-            "question" => MessageType::Question,
-            "comment" => MessageType::Comment,
-            "broadcast" => MessageType::Broadcast,
-            "work" => MessageType::Work,
-            _ => MessageType::Social,
-        }
-    }
-}
-
-/// A direct P2P message between agents (stored after gossip delivery)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DirectMessage {
-    pub id: String,
-    pub sender_did: String,
-    /// None = broadcast; Some(did) = targeted
-    pub recipient_did: Option<String>,
-    pub content: String,
-    pub message_type: MessageType,
-    pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
 #[cfg(test)]
@@ -830,6 +884,54 @@ mod tests {
     }
 
     #[test]
+    fn test_task_outcome_serialization() {
+        let outcome = TaskOutcome::SucceededPartially {
+            artifact_id: "art-1".into(),
+            coverage_spec: "80% complete".into(),
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        let restored: TaskOutcome = serde_json::from_str(&json).unwrap();
+        match restored {
+            TaskOutcome::SucceededPartially { coverage_spec, .. } => {
+                assert_eq!(coverage_spec, "80% complete");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_failure_reason_missing_capabilities() {
+        let reason = FailureReason::MissingCapabilities {
+            required: vec!["gpu".into()],
+            had: vec!["cpu".into()],
+        };
+        let json = serde_json::to_string(&reason).unwrap();
+        assert!(json.contains("MissingCapabilities"));
+    }
+
+    #[test]
+    fn test_commitment_receipt_serialization() {
+        let receipt = CommitmentReceipt {
+            commitment_id: "c1".into(),
+            deliverable_type: "artifact".into(),
+            evidence_hash: "sha256:abc".into(),
+            confidence_delta: 0.1,
+            can_undo: true,
+            rollback_cost: Some("low".into()),
+            rollback_window: Some("PT1H".into()),
+            expires_at: None,
+            commitment_state: CommitmentState::Active,
+            task_id: "t1".into(),
+            agent_id: "a1".into(),
+            created_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_string(&receipt).unwrap();
+        let restored: CommitmentReceipt = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.commitment_state, CommitmentState::Active);
+        assert!((restored.confidence_delta - 0.1).abs() < 1e-10);
+    }
+
+    #[test]
     fn test_irv_round_final_no_elimination() {
         use std::collections::HashMap;
         let mut tallies = HashMap::new();
@@ -896,16 +998,99 @@ mod tests {
     }
 
     #[test]
-    fn test_message_type_from_str() {
-        assert_eq!(MessageType::from("greeting"), MessageType::Greeting);
-        assert_eq!(MessageType::from("question"), MessageType::Question);
-        assert_eq!(MessageType::from("comment"), MessageType::Comment);
-        assert_eq!(MessageType::from("broadcast"), MessageType::Broadcast);
-        assert_eq!(MessageType::from("work"), MessageType::Work);
-        // unknown strings fall back to Social
-        assert_eq!(MessageType::from("social"), MessageType::Social);
-        assert_eq!(MessageType::from("unknown"), MessageType::Social);
-        assert_eq!(MessageType::from(""), MessageType::Social);
+    fn test_deliverable_tri_state_serialises() {
+        let d = Deliverable {
+            id: "d1".into(),
+            description: "Write tests".into(),
+            state: DeliverableState::Partial { note: "half done".into() },
+        };
+        let json = serde_json::to_string(&d).unwrap();
+        let back: Deliverable = serde_json::from_str(&json).unwrap();
+        match back.state {
+            DeliverableState::Partial { note } => assert_eq!(note, "half done"),
+            _ => panic!("wrong state"),
+        }
+    }
+
+    #[test]
+    fn test_task_with_deliverables_defaults() {
+        let t = Task::new("x".into(), 1, 0);
+        assert!(t.deliverables.is_empty());
+        assert_eq!(t.coverage_threshold, 0.0);
+        assert_eq!(t.confidence_review_threshold, 1.0);
+    }
+
+    #[test]
+    fn test_constraint_conflict_provenance() {
+        let cc = ConstraintConflict {
+            constraint_a: "must finish by Friday".into(),
+            introduced_by_a: "principal".into(),
+            constraint_b: "cannot start until Monday".into(),
+            introduced_by_b: "alice".into(),
+        };
+        let json = serde_json::to_string(&cc).unwrap();
+        let back: ConstraintConflict = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.introduced_by_b, "alice");
+    }
+
+    #[test]
+    fn test_failure_reason_contradictory_uses_conflict_graph() {
+        let fr = FailureReason::ContradictoryConstraints {
+            conflict_graph: vec![ConstraintConflict {
+                constraint_a: "A".into(),
+                introduced_by_a: "p1".into(),
+                constraint_b: "B".into(),
+                introduced_by_b: "p2".into(),
+            }],
+        };
+        let json = serde_json::to_string(&fr).unwrap();
+        let back: FailureReason = serde_json::from_str(&json).unwrap();
+        match back {
+            FailureReason::ContradictoryConstraints { conflict_graph } => {
+                assert_eq!(conflict_graph.len(), 1);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_pending_review_task_status() {
+        let s = TaskStatus::PendingReview;
+        let json = serde_json::to_string(&s).unwrap();
+        let back: TaskStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, TaskStatus::PendingReview);
+    }
+
+    #[test]
+    fn test_clarification_request_serialises() {
+        let cr = ClarificationRequest {
+            id: "cr-1".into(),
+            task_id: "t-1".into(),
+            requesting_agent: "alice".into(),
+            principal_id: "bob".into(),
+            question: "Which format?".into(),
+            resolution: None,
+            created_at: chrono::Utc::now(),
+            resolved_at: None,
+        };
+        let json = serde_json::to_string(&cr).unwrap();
+        let back: ClarificationRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.question, "Which format?");
+    }
+
+    #[test]
+    fn test_commitment_state_agent_fulfilled() {
+        let s = CommitmentState::AgentFulfilled;
+        let json = serde_json::to_string(&s).unwrap();
+        let back: CommitmentState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, CommitmentState::AgentFulfilled);
+    }
+
+    #[test]
+    fn test_commitment_state_legacy_fulfilled_compat() {
+        // Old "Fulfilled" JSON should deserialise to Fulfilled variant
+        let back: CommitmentState = serde_json::from_str("\"Fulfilled\"").unwrap();
+        assert_eq!(back, CommitmentState::Fulfilled);
     }
 
     #[test]

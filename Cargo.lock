@@ -4448,17 +4448,18 @@ checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
 
 [[package]]
 name = "wws-connector"
-version = "0.2.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "axum",
- "bytes",
+ "bip39",
  "chrono",
  "clap",
  "crossterm",
  "dirs",
  "ed25519-dalek",
  "futures-util",
+ "hex",
  "rand 0.8.5",
  "ratatui",
  "serde",
@@ -4481,7 +4482,7 @@ dependencies = [
 
 [[package]]
 name = "wws-consensus"
-version = "0.2.0"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "rand 0.8.5",
@@ -4497,7 +4498,7 @@ dependencies = [
 
 [[package]]
 name = "wws-hierarchy"
-version = "0.2.0"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "rand 0.8.5",
@@ -4511,7 +4512,7 @@ dependencies = [
 
 [[package]]
 name = "wws-network"
-version = "0.2.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -4530,7 +4531,7 @@ dependencies = [
 
 [[package]]
 name = "wws-protocol"
-version = "0.2.0"
+version = "0.8.0"
 dependencies = [
  "bip39",
  "chrono",
@@ -4549,7 +4550,7 @@ dependencies = [
 
 [[package]]
 name = "wws-state"
-version = "0.2.0"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "serde",

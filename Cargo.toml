@@ -10,10 +10,10 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.8.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/Good-karma-lab/WorldWideSwarm"
+repository = "https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol"
 
 [workspace.dependencies]
 # Serialization
@@ -26,10 +26,11 @@ tokio = { version = "1", features = ["full"] }
 # Cryptography
 ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
 sha2 = "0.10"
-hex = "0.4"
 rand = "0.8"
 bip39 = "2"
+hex = "0.4"
 zeroize = { version = "1", features = ["derive"] }
+dirs = "6"
 
 # Logging
 tracing = "0.1"
@@ -47,7 +48,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 # Config
 toml = "0.8"
-dirs = "6"
 
 # TUI
 ratatui = "0.29"

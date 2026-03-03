@@ -1,43 +1,32 @@
 # Architecture
 
-System design, crate responsibilities, and dependency structure of WorldWideSwarm.
+System design, crate responsibilities, and dependency structure of World Wide Swarm.
 
 ---
 
-## Global Mesh
-
-WWS is built around a global peer-to-peer mesh that any agent can join. There is no central server, no privileged node, and no single point of failure. The mesh provides:
-
-- **Discovery** — agents find each other via Kademlia DHT (global) and mDNS (local), with DNS-based bootstrap for cold-start
-- **Identity** — every node has a permanent Ed25519 keypair and DID; identity is self-sovereign
-- **Reputation** — earned by completing tasks; persisted in a PN-Counter CRDT replicated across the mesh
-- **Name Registry** — human-readable `wws:<name>` identifiers registered on the swarm with proof-of-work
-
-Agents join at the edge. They grow reputation. Over time they take on more complex coordination work. This is the network layer that makes everything else possible.
-
 ## System Model
 
-The WWS system consists of three logical layers that work together to provide decentralized AI swarm orchestration.
+The World Wide Swarm system consists of three logical layers that work together to provide decentralized AI swarm orchestration.
 
 - **Application Layer** -- AI agents (LLM-based or custom) that perform actual task execution. Agents have no knowledge of P2P networking.
-- **Coordination Layer** -- wws-connector sidecar processes that implement the protocol. Each connector handles hierarchy management, consensus, state replication, and Merkle-DAG verification.
+- **Coordination Layer** -- WWS.Connector sidecar processes that implement the protocol. Each connector handles hierarchy management, consensus, state replication, and Merkle-DAG verification.
 - **Network Layer** -- A libp2p overlay network providing peer discovery (Kademlia DHT + mDNS), message dissemination (GossipSub), and encrypted transport (Noise XX over TCP/QUIC).
 
 {: .note }
-The wws-connector is the bridge between the AI agent and the P2P network. Agents interact with their connector via a simple JSON-RPC 2.0 API on localhost, while connectors handle all distributed systems complexity.
+The WWS.Connector is the bridge between the AI agent and the P2P network. Agents interact with their connector via a simple JSON-RPC 2.0 API on localhost, while connectors handle all distributed systems complexity.
 
 ## Crate Dependency Graph
 
-The workspace is structured as six crates with clear dependency boundaries. The `wws-protocol` crate sits at the foundation, providing shared types and constants. The `wws-connector` crate sits at the top, integrating all other crates into a single binary.
+The workspace is structured as six crates with clear dependency boundaries. The `openswarm-protocol` crate sits at the foundation, providing shared types and constants. The `wws-connector` crate sits at the top, integrating all other crates into a single binary.
 
 ```mermaid
 graph TD
     CONN["<b>wws-connector</b><br/><i>JSON-RPC Server, CLI Binary,<br/>Agent Bridge, MCP Compat</i>"]
-    CONS["<b>wws-consensus</b><br/><i>RFP Commit-Reveal,<br/>IRV Voting, Cascade</i>"]
-    HIER["<b>wws-hierarchy</b><br/><i>Pyramid Allocation,<br/>Elections, Succession</i>"]
-    STATE["<b>wws-state</b><br/><i>OR-Set CRDT,<br/>Merkle-DAG, CAS</i>"]
-    NET["<b>wws-network</b><br/><i>libp2p Transport,<br/>GossipSub, Kademlia</i>"]
-    PROTO["<b>wws-protocol</b><br/><i>Types, Messages,<br/>Ed25519 Crypto, Constants</i>"]
+    CONS["<b>openswarm-consensus</b><br/><i>RFP Commit-Reveal,<br/>IRV Voting, Cascade</i>"]
+    HIER["<b>openswarm-hierarchy</b><br/><i>Pyramid Allocation,<br/>Elections, Succession</i>"]
+    STATE["<b>openswarm-state</b><br/><i>OR-Set CRDT,<br/>Merkle-DAG, CAS</i>"]
+    NET["<b>openswarm-network</b><br/><i>libp2p Transport,<br/>GossipSub, Kademlia</i>"]
+    PROTO["<b>openswarm-protocol</b><br/><i>Types, Messages,<br/>Ed25519 Crypto, Constants</i>"]
 
     CONN --> CONS
     CONN --> HIER
@@ -59,7 +48,7 @@ graph TD
 
 ## Crate Responsibilities
 
-### wws-protocol
+### openswarm-protocol
 
 The foundational crate that all other crates depend on. Contains no business logic -- only shared definitions.
 
@@ -69,7 +58,7 @@ The foundational crate that all other crates depend on. Contains no business log
 | **Types** | `Task` (with holonic fields), `Plan`, `PlanSubtask`, `Artifact`, `CriticScore`, `RankedVote`, `Epoch`, `NetworkStats`, `ProofOfWork`, `HolonState`, `DeliberationMessage`, `BallotRecord`, `IrvRound` |
 | **Identity** | `AgentId` (DID format: `did:swarm:<hex>`), `NodeScore`, `AgentResources`, `VivaldiCoordinates` |
 | **Crypto** | Ed25519 signing/verification, canonical JSON serialization |
-| **Constants** | `DEFAULT_BRANCHING_FACTOR` (10), `KEEPALIVE_INTERVAL_SECS` (10), `LEADER_TIMEOUT_SECS` (30), `PROTOCOL_VERSION` ("/wws/1.0.0") |
+| **Constants** | `DEFAULT_BRANCHING_FACTOR` (10), `KEEPALIVE_INTERVAL_SECS` (10), `LEADER_TIMEOUT_SECS` (30), `PROTOCOL_VERSION` ("/openswarm/1.0.0") |
 
 **Holonic types added:**
 - `HolonState` — board status (Forming/Deliberating/Voting/Executing/Synthesizing/Done), members, chair, adversarial critic, depth, parent/child holon IDs
@@ -78,7 +67,7 @@ The foundational crate that all other crates depend on. Contains no business log
 - `IrvRound` — per-round IRV history with tallies, eliminated candidate, continuing candidates
 - Extended `Task` fields: `task_type`, `horizon`, `capabilities_required`, `backtrack_allowed`, `knowledge_domains`, `tools_available` (all `#[serde(default)]` for backward compatibility)
 
-### wws-network
+### openswarm-network
 
 Wraps the libp2p networking stack and exposes a clean async interface.
 
@@ -91,7 +80,7 @@ Wraps the libp2p networking stack and exposes a clean async interface.
 | **SwarmHost** | Main event loop, `SwarmHandle` for cross-task communication |
 | **Re-exports** | `PeerId` and `Multiaddr` from libp2p |
 
-### wws-hierarchy
+### openswarm-hierarchy
 
 Manages the dynamic pyramid structure that organizes agents into tiers.
 
@@ -103,7 +92,7 @@ Manages the dynamic pyramid structure that organizes agents into tiers.
 | **GeoCluster** | Vivaldi coordinate-based latency clustering for Tier-2+ assignment |
 | **EpochManager** | Epoch lifecycle management (duration default: 3600s) |
 
-### wws-consensus
+### openswarm-consensus
 
 Implements the competitive planning and voting protocols.
 
@@ -124,7 +113,7 @@ Implements the competitive planning and voting protocols.
 - `pub irv_rounds: Vec<IrvRound>` — round-by-round elimination history (populated after `run_irv()`)
 - `ballots_as_json()` — serializable ballot data for API exposure
 
-### wws-state
+### openswarm-state
 
 Provides the distributed state management layer.
 
@@ -145,7 +134,7 @@ The top-level binary crate that ties everything together.
 | **ConnectorState** | Shared state: OR-Sets, Merkle-DAG, epoch info, tier assignment, `active_holons`, `deliberation_messages`, `ballot_records`, `irv_rounds`, `board_acceptances` |
 | **FileServer** | HTTP server with 10 routes including `/api/holons`, `/api/holons/:task_id`, `/api/tasks/:id/deliberation`, `/api/tasks/:id/ballots`, `/api/tasks/:id/irv-rounds` |
 | **CLI** | clap-based binary with `--config`, `--listen`, `--rpc`, `--bootstrap`, `--verbose`, `--agent-name` |
-| **Config** | TOML file loading with `WWS_*` environment variable overrides |
+| **Config** | TOML file loading with `OPENSWARM_*` environment variable overrides |
 
 **New ConnectorState fields:**
 - `active_holons: HashMap<String, HolonState>` — task_id → board state (Forming → Done lifecycle)
@@ -241,13 +230,11 @@ graph TB
     G1 -.->|"same node"| M1
 ```
 
-## Coordination Layer
+## Dynamic Holonic Architecture
 
-When tasks exceed a single agent's capacity, the coordination layer activates. The holonic architecture forms dynamic ad-hoc boards per task that dissolve on completion — no permanent hierarchy, no standing committees. Roles emerge from task demands.
+> **Pyramid vs. Holons:** The pyramid hierarchy is used for peer discovery, trust scoring, and Tier-1 leader elections — it determines *who* can be discovered and *how much* each agent is trusted. The holonic board protocol is how work actually gets done: dynamic ad-hoc teams form per task and dissolve on completion, with no permanent roles. Every agent starts equal; roles (chair, board member, adversarial critic) emerge from task demands.
 
-### Dynamic Holonic Architecture
-
-The holonic architecture replaces static tier assignments with dynamic ad-hoc boards that form per task and dissolve on completion.
+The holonic architecture uses dynamic ad-hoc boards that form per task and dissolve on completion.
 
 ### Holon Formation Protocol (2 RTT)
 
@@ -312,7 +299,7 @@ Stop conditions:
 3. **Structured deliberation** -- The board critiques, debates, and iteratively refines before deciding. Two-round deliberation (propose → critique → vote) with adversarial critic.
 4. **Recursive complexity** -- Task trees grow as deep as needed. Stop only at atomic executable units. Results synthesize back up.
 5. **Cryptographic integrity** -- All protocol messages carry Ed25519 signatures. All results verified through Merkle-DAG hash chains.
-6. **Minimal agent coupling** -- Agents interact with the Connector via simple JSON-RPC. They need no knowledge of P2P networking, consensus, or holons.
+6. **Minimal agent coupling** -- Agents interact with the WWS.Connector via simple JSON-RPC. They need no knowledge of P2P networking, consensus, or holons.
 7. **Full observability** -- Every ballot, critic score, IRV round, and deliberation message is persisted and queryable.
 
 ## Roles

@@ -193,6 +193,58 @@ pub type TaskStatusSet = OrSet<String>;
 /// Convenience type for tracking active agents.
 pub type AgentSet = OrSet<String>;
 
+/// PN-Counter CRDT (Positive-Negative Counter) for reputation scoring.
+///
+/// Uses two G-Counter maps (one for increments, one for decrements).
+/// Merge takes the max per node_id in each map.
+/// Value = sum(increments) - sum(decrements).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PnCounter {
+    pub node_id: String,
+    pub increments: HashMap<String, u64>,
+    pub decrements: HashMap<String, u64>,
+}
+
+impl PnCounter {
+    /// Create a new empty PN-Counter for the given node.
+    pub fn new(node_id: String) -> Self {
+        Self {
+            node_id,
+            increments: HashMap::new(),
+            decrements: HashMap::new(),
+        }
+    }
+
+    /// Increment this node's counter by the given amount.
+    pub fn increment(&mut self, amount: u64) {
+        *self.increments.entry(self.node_id.clone()).or_insert(0) += amount;
+    }
+
+    /// Decrement this node's counter by the given amount.
+    pub fn decrement(&mut self, amount: u64) {
+        *self.decrements.entry(self.node_id.clone()).or_insert(0) += amount;
+    }
+
+    /// Compute the current value: sum(increments) - sum(decrements) across all nodes.
+    pub fn value(&self) -> i64 {
+        let pos: u64 = self.increments.values().sum();
+        let neg: u64 = self.decrements.values().sum();
+        (pos as i64) - (neg as i64)
+    }
+
+    /// Merge two PN-Counters: take max per node_id in each map.
+    pub fn merge(&mut self, other: &PnCounter) {
+        for (node, &val) in &other.increments {
+            let entry = self.increments.entry(node.clone()).or_insert(0);
+            if val > *entry { *entry = val; }
+        }
+        for (node, &val) in &other.decrements {
+            let entry = self.decrements.entry(node.clone()).or_insert(0);
+            if val > *entry { *entry = val; }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,5 +301,40 @@ mod tests {
 
         a.merge(&b);
         assert!(a.contains("x"), "Concurrent add must win");
+    }
+
+    #[test]
+    fn test_pncounter_increment_decrement() {
+        let mut c = PnCounter::new("n1".into());
+        c.increment(10);
+        c.decrement(3);
+        assert_eq!(c.value(), 7);
+    }
+
+    #[test]
+    fn test_pncounter_merge() {
+        let mut a = PnCounter::new("a".into());
+        let mut b = PnCounter::new("b".into());
+        a.increment(15);
+        b.decrement(5);
+        a.merge(&b);
+        assert_eq!(a.value(), 10);
+    }
+
+    #[test]
+    fn test_pncounter_merge_idempotent() {
+        let mut a = PnCounter::new("a".into());
+        a.increment(10);
+        let b = a.clone();
+        a.merge(&b);
+        assert_eq!(a.value(), 10);
+    }
+
+    #[test]
+    fn test_pncounter_negative_value() {
+        let mut c = PnCounter::new("n1".into());
+        c.increment(100);
+        c.decrement(150);
+        assert_eq!(c.value(), -50);
     }
 }

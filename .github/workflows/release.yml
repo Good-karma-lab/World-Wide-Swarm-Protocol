@@ -84,6 +84,16 @@ jobs:
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: webapp/package-lock.json
+
+      - name: Build webapp
+        run: cd webapp && npm ci && npm run build
+
       - name: Package (Unix)
         if: runner.os != 'Windows'
         shell: bash
@@ -93,7 +103,8 @@ jobs:
           tar czf "$ARCHIVE" \
             -C "target/${{ matrix.target }}/release" "${{ env.BINARY_NAME }}" \
             -C "${{ github.workspace }}" README.md QUICKSTART.md \
-            docs/SKILL.md docs/HEARTBEAT.md docs/MESSAGING.md
+            docs/SKILL.md docs/HEARTBEAT.md docs/MESSAGING.md \
+            webapp/dist
           echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
 
       - name: Package (Windows)
@@ -103,8 +114,16 @@ jobs:
           $version = "${{ steps.version.outputs.version }}"
           $archive = "${{ env.BINARY_NAME }}-${version}-${{ matrix.archive_name }}.zip"
           $binary = "target\${{ matrix.target }}\release\${{ env.BINARY_NAME }}.exe"
-          Compress-Archive -Path $binary, README.md, QUICKSTART.md, docs\SKILL.md, docs\HEARTBEAT.md, docs\MESSAGING.md `
-            -DestinationPath $archive
+          $stage = "dist_stage"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item $binary $stage
+          Copy-Item README.md, QUICKSTART.md $stage
+          New-Item -ItemType Directory -Force -Path "$stage\docs" | Out-Null
+          Copy-Item docs\SKILL.md, docs\HEARTBEAT.md, docs\MESSAGING.md "$stage\docs"
+          New-Item -ItemType Directory -Force -Path "$stage\webapp" | Out-Null
+          Copy-Item -Path webapp\dist -Destination "$stage\webapp" -Recurse
+          Compress-Archive -Path "$stage\*" -DestinationPath $archive
+          Remove-Item $stage -Recurse -Force
           echo "ARCHIVE=$archive" >> $env:GITHUB_ENV
 
       - name: Upload artifact

@@ -1,4 +1,4 @@
-# Agent Swarm Intelligence Protocol (ASIP) Specification
+# World Wide Swarm (WWS) Protocol Specification
 
 **Protocol Revision:** 2026-02-07
 **Version:** 0.1.0
@@ -17,7 +17,7 @@
 7. [Task Execution & Verification](#7-task-execution--verification)
 8. [State Management](#8-state-management)
 9. [Adaptive Granularity](#9-adaptive-granularity)
-10. [Agent Integration (ASIP.Connector)](#10-agent-integration-swarm-connector)
+10. [Agent Integration (WWS.Connector)](#10-agent-integration-swarm-connector)
 11. [Error Handling](#11-error-handling)
 12. [Security](#12-security)
 13. [Schema Reference](#13-schema-reference)
@@ -29,7 +29,7 @@
 
 ### 1.1 Purpose and Scope
 
-The Agent Swarm Intelligence Protocol (ASIP) is an open standard for decentralized orchestration of
+The World Wide Swarm (WWS) Protocol is an open standard for decentralized orchestration of
 large-scale artificial intelligence agent swarms. It enables thousands of heterogeneous
 AI agents to self-organize into strict hierarchical structures, perform competitive
 planning, and execute distributed tasks without a single point of failure.
@@ -37,7 +37,7 @@ planning, and execute distributed tasks without a single point of failure.
 This specification defines:
 - The wire protocol (message formats, transport, framing)
 - The coordination algorithms (hierarchy formation, consensus, verification)
-- The integration interface (ASIP.Connector API for agent runtimes)
+- The integration interface (WWS.Connector API for agent runtimes)
 - The state management model (CRDT hot state, content-addressed cold storage)
 
 This specification does NOT define:
@@ -65,8 +65,8 @@ interpreted as described in [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).
 | Term | Definition |
 |------|------------|
 | **Agent** | An autonomous AI system (e.g., an LLM-based agent) that participates in the swarm. |
-| **ASIP.Connector** | A sidecar process running alongside each Agent, implementing the ASIP network protocol. |
-| **Node** | A ASIP.Connector instance with a unique identity in the overlay network. |
+| **WWS.Connector** | A sidecar process running alongside each Agent, implementing the WWS network protocol. |
+| **Node** | A WWS.Connector instance with a unique identity in the overlay network. |
 | **Swarm** | The complete set of connected Nodes forming the overlay network. |
 | **Tier** | A level in the dynamic pyramid hierarchy. Tier-1 is the top (High Command). |
 | **Branching Factor (k)** | The number of subordinate nodes each coordinator oversees. Default: 10. |
@@ -90,15 +90,15 @@ The protocol uses semantic versioning: `MAJOR.MINOR.PATCH`.
 - **MINOR**: Backwards-compatible feature additions.
 - **PATCH**: Clarifications and editorial changes.
 
-The protocol version string is: `/wws/1.0.0`
+The protocol version string is: `/openswarm/1.0.0`
 
 ### 1.5 Relationship to Other Protocols
 
 | Protocol | Relationship |
 |----------|-------------|
-| **JSON-RPC 2.0** | ASIP messages use JSON-RPC 2.0 envelope format for all communications. |
-| **libp2p** | ASIP uses libp2p for transport, peer discovery (Kademlia), and publish-subscribe (GossipSub). |
-| **MCP** | The ASIP.Connector MAY expose an MCP-compatible interface, allowing agents to use the swarm as a Tool. |
+| **JSON-RPC 2.0** | WWS messages use JSON-RPC 2.0 envelope format for all communications. |
+| **libp2p** | WWS uses libp2p for transport, peer discovery (Kademlia), and publish-subscribe (GossipSub). |
+| **MCP** | The WWS.Connector MAY expose an MCP-compatible interface, allowing agents to use the swarm as a Tool. |
 | **IPFS** | Content-addressed storage uses IPFS-compatible CID computation. |
 
 ---
@@ -107,7 +107,7 @@ The protocol version string is: `/wws/1.0.0`
 
 ### 2.1 System Model
 
-The WorldWideSwarm system consists of three logical layers:
+The World Wide Swarm system consists of three logical layers:
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -119,7 +119,7 @@ The WorldWideSwarm system consists of three logical layers:
 │       │JSON-RPC      │             │                  │
 ├───────┼──────────────┼─────────────┼──────────────────┤
 │       ▼              ▼             ▼                  │
-│  Coordination Layer (ASIP.Connectors)                │
+│  Coordination Layer (WWS.Connectors)                │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐           │
 │  │Connector │  │Connector │  │Connector │  ...       │
 │  │  Node A  │◄─►  Node B  │◄─►  Node C  │           │
@@ -159,7 +159,7 @@ Every Node in the swarm holds exactly one role at any time:
 
 ### 3.1 Message Format
 
-All WorldWideSwarm messages use JSON-RPC 2.0 envelope format with an additional `signature` field.
+All WWS messages use JSON-RPC 2.0 envelope format with an additional `signature` field.
 
 #### 3.1.1 Request
 
@@ -239,25 +239,25 @@ Inter-node communication uses libp2p with the following configuration:
 
 #### 3.2.2 Local Transport (Connector ↔ Agent)
 
-The ASIP.Connector exposes a JSON-RPC 2.0 server to the local Agent over:
+The WWS.Connector exposes a JSON-RPC 2.0 server to the local Agent over:
 - **TCP** on `127.0.0.1:<port>` (default port: `9390`)
-- **Unix Domain Socket** at `/tmp/wws-connector.sock` (preferred on Unix systems)
+- **Unix Domain Socket** at `/tmp/openswarm-connector.sock` (preferred on Unix systems)
 
 Messages on the local transport do NOT require the `signature` field.
 
 #### 3.2.3 GossipSub Topics
 
-All GossipSub topics use the prefix `/wws/1.0.0/`.
+All GossipSub topics use the prefix `/openswarm/1.0.0/`.
 
 | Topic | Pattern | Purpose |
 |-------|---------|---------|
-| Election (Tier-1) | `/wws/1.0.0/election/tier1` | Candidacy announcements and election votes. |
-| Proposals | `/wws/1.0.0/proposals/<task_id>` | Proposal commits and reveals for a specific task. |
-| Voting | `/wws/1.0.0/voting/<task_id>` | Ranked choice votes for a specific task. |
-| Tasks (per tier) | `/wws/1.0.0/tasks/tier<N>` | Task assignments for agents at tier N. |
-| Results | `/wws/1.0.0/results/<task_id>` | Result submissions for a specific task. |
-| Keep-alive | `/wws/1.0.0/keepalive` | Periodic liveness signals. |
-| Hierarchy | `/wws/1.0.0/hierarchy` | Tier assignments and succession announcements. |
+| Election (Tier-1) | `/openswarm/1.0.0/election/tier1` | Candidacy announcements and election votes. |
+| Proposals | `/openswarm/1.0.0/proposals/<task_id>` | Proposal commits and reveals for a specific task. |
+| Voting | `/openswarm/1.0.0/voting/<task_id>` | Ranked choice votes for a specific task. |
+| Tasks (per tier) | `/openswarm/1.0.0/tasks/tier<N>` | Task assignments for agents at tier N. |
+| Results | `/openswarm/1.0.0/results/<task_id>` | Result submissions for a specific task. |
+| Keep-alive | `/openswarm/1.0.0/keepalive` | Periodic liveness signals. |
+| Hierarchy | `/openswarm/1.0.0/hierarchy` | Tier assignments and succession announcements. |
 
 ### 3.3 Identity
 
@@ -316,7 +316,7 @@ The same keypair serves as:
 
 ### 4.2 Bootstrap Process
 
-When a ASIP.Connector starts:
+When a WWS.Connector starts:
 
 1. **Key Generation**: If no existing keypair is found, generate a new Ed25519 keypair and persist it.
 2. **Local Discovery (mDNS)**: Broadcast an mDNS query on the local network. If peers respond, establish local connections immediately.
@@ -355,7 +355,7 @@ When a ASIP.Connector starts:
       "hash": "0000a3f2...",
       "difficulty": 16
     },
-    "protocol_version": "/wws/1.0.0"
+    "protocol_version": "/openswarm/1.0.0"
   },
   "signature": "3045..."
 }
@@ -832,7 +832,7 @@ After the winning plan is selected:
 
 When an Executor (leaf node) receives an atomic task:
 
-1. The ASIP.Connector converts the task into the agent's native format (e.g., OpenClaw prompt).
+1. The WWS.Connector converts the task into the agent's native format (e.g., OpenClaw prompt).
 2. The agent executes the task and produces an output.
 3. The Connector packages the output as an Artifact with a Content ID (CID).
 
@@ -919,7 +919,7 @@ The Prime Orchestrator:
 
 ### 8.1 Hot State: CRDT (Conflict-free Replicated Data Types)
 
-For synchronizing real-time state across the swarm, ASIP uses **Observed-Remove Sets (OR-Sets)**.
+For synchronizing real-time state across the swarm, WWS uses **Observed-Remove Sets (OR-Sets)**.
 
 #### 8.1.1 Managed State
 
@@ -1000,11 +1000,11 @@ When a task cannot be decomposed but idle agents exist:
 
 ---
 
-## 10. Agent Integration (ASIP.Connector)
+## 10. Agent Integration (WWS.Connector)
 
 ### 10.1 Overview
 
-The ASIP.Connector is a sidecar process providing agents with a simple local API.
+The WWS.Connector is a sidecar process providing agents with a simple local API.
 The agent needs no knowledge of P2P networking, consensus, or hierarchy — it simply
 receives tasks and returns results.
 
@@ -1141,7 +1141,7 @@ Get current agent status within the swarm.
 
 ### 10.3 MCP Compatibility
 
-The ASIP.Connector MAY expose an MCP Server interface, allowing agents to
+The WWS.Connector MAY expose an MCP Server interface, allowing agents to
 use the swarm as a Tool:
 
 ```json

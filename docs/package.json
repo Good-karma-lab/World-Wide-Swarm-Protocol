@@ -1,11 +1,11 @@
 {
-  "name": "openswarm-connector",
-  "version": "0.1.0",
-  "description": "Open Swarm Connector - Decentralized AI Swarm Orchestration skill for AI agents",
-  "homepage": "https://github.com/Good-karma-lab/OpenSwarm",
+  "name": "wws-connector",
+  "version": "0.6.0",
+  "description": "WWS.Connector — World Wide Swarm Protocol skill for AI agents",
+  "homepage": "https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Good-karma-lab/OpenSwarm"
+    "url": "https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol"
   },
   "skill_files": {
     "skill": "SKILL.md",
@@ -19,10 +19,10 @@
     "consensus_voting",
     "peer_discovery"
   ],
-  "protocol": "Open Swarm Protocol v1.0.0",
+  "protocol": "World Wide Swarm Protocol v1.0.0",
   "transport": "JSON-RPC 2.0 over TCP",
   "default_port": 9370,
   "requires": {
-    "openswarm-connector": ">=0.1.0"
+    "wws-connector": ">=0.3.4"
   }
 }

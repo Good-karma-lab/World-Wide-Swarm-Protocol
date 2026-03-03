@@ -6,7 +6,7 @@ libp2p stack, GossipSub topics, Kademlia DHT, mDNS, and swarm size estimation.
 
 ## Overview
 
-The `openswarm-network` crate provides the foundational P2P networking layer for the WorldWideSwarm protocol. It wraps the libp2p networking stack and exposes a clean async interface through the `SwarmHost` and `SwarmHandle` types.
+The `openswarm-network` crate provides the foundational P2P networking layer for the World Wide Swarm protocol. It wraps the libp2p networking stack and exposes a clean async interface through the `SwarmHost` and `SwarmHandle` types.
 
 Key responsibilities:
 - Peer discovery via mDNS and Kademlia DHT
@@ -77,17 +77,17 @@ The swarm is built using `build_swarm(config)` or `build_swarm_with_keypair(keyp
 
 ## GossipSub Topics
 
-All GossipSub topics use the prefix `/wws/1.0.0/`. The `TopicManager` handles subscription lifecycle.
+All GossipSub topics use the prefix `/openswarm/1.0.0/`. The `TopicManager` handles subscription lifecycle.
 
 | Topic | Pattern | Purpose | Subscribers |
 |-------|---------|---------|-------------|
-| **Election** | `/wws/1.0.0/election/tier1` | Candidacy announcements and election votes | All nodes |
-| **Proposals** | `/wws/1.0.0/proposals/<task_id>` | Proposal commits and reveals for a specific task | Tier-1 + Senate |
-| **Voting** | `/wws/1.0.0/voting/<task_id>` | Ranked choice votes for a specific task | Tier-1 + Senate |
-| **Tasks** | `/wws/1.0.0/tasks/tier<N>` | Task assignments for agents at tier N | Tier-N agents |
-| **Results** | `/wws/1.0.0/results/<task_id>` | Result submissions for a specific task | Parent coordinators |
-| **Keep-alive** | `/wws/1.0.0/keepalive` | Periodic liveness signals (every 10s) | All nodes |
-| **Hierarchy** | `/wws/1.0.0/hierarchy` | Tier assignments and succession announcements | All nodes |
+| **Election** | `/openswarm/1.0.0/election/tier1` | Candidacy announcements and election votes | All nodes |
+| **Proposals** | `/openswarm/1.0.0/proposals/<task_id>` | Proposal commits and reveals for a specific task | Tier-1 + Senate |
+| **Voting** | `/openswarm/1.0.0/voting/<task_id>` | Ranked choice votes for a specific task | Tier-1 + Senate |
+| **Tasks** | `/openswarm/1.0.0/tasks/tier<N>` | Task assignments for agents at tier N | Tier-N agents |
+| **Results** | `/openswarm/1.0.0/results/<task_id>` | Result submissions for a specific task | Parent coordinators |
+| **Keep-alive** | `/openswarm/1.0.0/keepalive` | Periodic liveness signals (every 10s) | All nodes |
+| **Hierarchy** | `/openswarm/1.0.0/hierarchy` | Tier assignments and succession announcements | All nodes |
 
 ### Topic Subscription Strategy
 
@@ -111,7 +111,7 @@ topic_manager.unsubscribe_task_topics(&mut gossipsub, "task-123")?; // cleanup
 
 ## Kademlia DHT
 
-The Kademlia DHT serves two purposes in WorldWideSwarm:
+The Kademlia DHT serves two purposes in World Wide Swarm:
 
 ### 1. Peer Discovery
 
@@ -140,7 +140,7 @@ Consumers look up providers for a CID, then fetch data directly via peer-to-peer
 
 mDNS provides zero-configuration peer discovery on the local network:
 
-- Automatically discovers WorldWideSwarm nodes on the same LAN
+- Automatically discovers WWS nodes on the same LAN
 - No bootstrap nodes required for local development and testing
 - Can be disabled via configuration (`network.mdns_enabled = false`)
 - Peers discovered via mDNS are immediately connected and added to the routing table
@@ -246,7 +246,7 @@ The same keypair serves as:
 
 | Parameter | Default | Environment Variable | Description |
 |-----------|---------|---------------------|-------------|
-| `listen_addr` | `/ip4/0.0.0.0/tcp/0` | `WWS_LISTEN_ADDR` | P2P listen multiaddress |
-| `bootstrap_peers` | `[]` | `WWS_BOOTSTRAP_PEERS` | Comma-separated bootstrap multiaddresses |
+| `listen_addr` | `/ip4/0.0.0.0/tcp/0` | `OPENSWARM_LISTEN_ADDR` | P2P listen multiaddress |
+| `bootstrap_peers` | `[]` | `OPENSWARM_BOOTSTRAP_PEERS` | Comma-separated bootstrap multiaddresses |
 | `mdns_enabled` | `true` | -- | Enable mDNS local discovery |
 | `idle_connection_timeout_secs` | `60` | -- | Close idle connections after this duration |

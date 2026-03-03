@@ -13,10 +13,18 @@
 //! - `swarm.list_swarms()` - List all known swarms with their info
 //! - `swarm.create_swarm()` - Create a new private swarm
 //! - `swarm.join_swarm()` - Join an existing swarm
-//! - `swarm.register_name()` - Register a wws:// name for this agent
-//! - `swarm.resolve_name()` - Resolve a wws:// name to DID + peer_id
-//! - `swarm.renew_name()` - Renew an existing name registration (extend TTL)
-//! - `swarm.my_names()` - List all names registered by this agent
+//! - `swarm.register_name()` - Bind a human-readable name to a DID
+//! - `swarm.resolve_name()` - Resolve a name to a DID
+//! - `swarm.send_message()` - Send a direct message to another agent
+//! - `swarm.get_messages()` - Retrieve inbox messages
+//! - `swarm.get_reputation()` - Get reputation scores for an agent
+//! - `swarm.get_reputation_events()` - Get paginated reputation event history
+//! - `swarm.submit_reputation_event()` - Submit an observer-weighted reputation event
+//! - `swarm.create_receipt()` - Create a commitment receipt at task start
+//! - `swarm.fulfill_receipt()` - Agent proposes fulfillment + posts evidence_hash
+//! - `swarm.verify_receipt()` - External verifier confirms or disputes receipt
+//! - `swarm.request_clarification()` - Agent requests clarification from principal
+//! - `swarm.resolve_clarification()` - Principal resolves a clarification request
 //!
 //! The server listens on localhost TCP and speaks JSON-RPC 2.0.
 //! Each line received is a JSON-RPC request; each line sent is a response.
@@ -139,6 +147,20 @@ async fn process_request(
 
     let request_id = request.id.clone();
 
+    // Optional per-session RPC token check.
+    if let Ok(required_token) = std::env::var("OPENSWARM_RPC_TOKEN") {
+        if !required_token.trim().is_empty() {
+            let provided = request.params.get("rpc_token").and_then(|v| v.as_str()).unwrap_or("");
+            if provided != required_token.trim() {
+                return SwarmResponse::error(
+                    request_id.clone(),
+                    -32001,
+                    "Unauthorized: invalid or missing rpc_token".into(),
+                );
+            }
+        }
+    }
+
     match request.method.as_str() {
         "swarm.connect" => handle_connect(request_id, &request.params, network_handle).await,
         "swarm.get_network_stats" => handle_get_network_stats(request_id, state).await,
@@ -191,16 +213,41 @@ async fn process_request(
         "swarm.resolve_name" => {
             handle_resolve_name(request_id, &request.params, state).await
         }
-        "swarm.renew_name" => {
-            handle_renew_name(request_id, &request.params, state).await
-        }
-        "swarm.my_names" => handle_my_names(request_id, state).await,
-        "swarm.verify_agent" => {
-            handle_verify_agent(request_id, &request.params, state).await
-        }
         "swarm.send_message" => {
             handle_send_message(request_id, &request.params, state, network_handle).await
         }
+        "swarm.get_messages" => {
+            handle_get_messages(request_id, state).await
+        }
+        "swarm.get_reputation" => {
+            handle_get_reputation(request_id, &request.params, state).await
+        }
+        "swarm.get_reputation_events" => {
+            handle_get_reputation_events(request_id, &request.params, state).await
+        }
+        "swarm.submit_reputation_event" => {
+            handle_submit_reputation_event(request_id, &request.params, state).await
+        }
+        "swarm.rotate_key" => {
+            handle_rotate_key(request_id, &request.params, state).await
+        }
+        "swarm.emergency_revocation" => {
+            handle_emergency_revocation(request_id, &request.params, state).await
+        }
+        "swarm.register_guardians" => {
+            handle_register_guardians(request_id, &request.params, state).await
+        }
+        "swarm.guardian_recovery_vote" => {
+            handle_guardian_recovery_vote(request_id, &request.params, state).await
+        }
+        "swarm.get_identity" => {
+            handle_get_identity(request_id, &request.params, state).await
+        }
+        "swarm.create_receipt" => handle_create_receipt(request_id, &request.params, state).await,
+        "swarm.fulfill_receipt" => handle_fulfill_receipt(request_id, &request.params, state).await,
+        "swarm.verify_receipt" => handle_verify_receipt(request_id, &request.params, state).await,
+        "swarm.request_clarification" => handle_request_clarification(request_id, &request.params, state).await,
+        "swarm.resolve_clarification" => handle_resolve_clarification(request_id, &request.params, state).await,
         _ => SwarmResponse::error(
             request_id,
             -32601, // Method not found
@@ -323,6 +370,15 @@ async fn handle_submit_vote(
                     accepted_rankings.join(" > ")
                 ),
         );
+        // Record own ballot immediately (P2P won't echo back to sender)
+        state.ballot_records.entry(task_id.clone()).or_default().push(BallotRecord {
+            task_id: task_id.clone(),
+            voter: voter.clone(),
+            rankings: accepted_rankings.clone(),
+            critic_scores: std::collections::HashMap::new(),
+            timestamp: chrono::Utc::now(),
+            irv_round_when_eliminated: None,
+        });
 
         (
             voter,
@@ -439,6 +495,13 @@ async fn handle_submit_critique(
                 HolonStatus::Forming | HolonStatus::Deliberating
             ) {
                 holon.status = HolonStatus::Voting;
+            }
+        }
+
+        // Update own BallotRecord with critic_scores from this critique
+        if let Some(ballots) = state.ballot_records.get_mut(&task_id) {
+            if let Some(own_ballot) = ballots.iter_mut().find(|b| b.voter == voter) {
+                own_ballot.critic_scores = plan_scores.clone();
             }
         }
 
@@ -659,10 +722,13 @@ pub(crate) async fn handle_propose_plan(
             .map(|t| t.tier_level)
             .unwrap_or(1);
         let tier = tier_from_level(task_tier_level);
-        let expected_proposers =
-            active_members_in_tier(&state, tier, Duration::from_secs(ACTIVE_MEMBER_STALENESS_SECS))
-                .len()
-                .max(1);
+        let in_tier = active_members_in_tier(&state, tier, Duration::from_secs(ACTIVE_MEMBER_STALENESS_SECS)).len();
+        let expected_proposers = if in_tier > 0 {
+            in_tier
+        } else {
+            // No agents of the required tier (small swarm); fall back to all active agents
+            state.active_member_ids(Duration::from_secs(ACTIVE_MEMBER_STALENESS_SECS)).len()
+        }.max(1);
 
         let commit = ProposalCommitParams {
             task_id: plan.task_id.clone(),
@@ -815,7 +881,11 @@ pub(crate) async fn handle_propose_plan(
             .unwrap_or(1);
         let tier = tier_from_level(task_tier_level);
         let tier_members = active_members_in_tier(&state, tier, Duration::from_secs(ACTIVE_MEMBER_STALENESS_SECS));
-        let expected = tier_members.len().max(1);
+        let expected = if !tier_members.is_empty() {
+            tier_members.len()
+        } else {
+            state.active_member_ids(Duration::from_secs(ACTIVE_MEMBER_STALENESS_SECS)).len()
+        }.max(1);
         state.task_vote_requirements.insert(
             plan.task_id.clone(),
             crate::connector::TaskVoteRequirement {
@@ -1105,7 +1175,8 @@ pub(crate) async fn handle_submit_result(
                     state
                         .task_details
                         .get(sub_id)
-                        .map(|t| t.status == TaskStatus::Completed)
+                        // PendingReview is terminal for aggregation — result was submitted, awaiting human review
+                        .map(|t| t.status == TaskStatus::Completed || t.status == TaskStatus::PendingReview)
                         .unwrap_or(false)
                 });
                 if !all_subtasks_done {
@@ -1163,6 +1234,44 @@ pub(crate) async fn handle_submit_result(
             ),
         );
 
+        let confidence_delta = params.get("confidence_delta").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let _task_outcome_str = params.get("task_outcome").and_then(|v| v.as_str()).unwrap_or("succeeded_fully").to_string();
+
+        if confidence_delta > 0.2 {
+            state.push_log(
+                crate::tui::LogCategory::Swarm,
+                format!("Agent confidence dropped {:.2} during task — review suggested", confidence_delta),
+            );
+        }
+
+        // PendingReview: flag task if confidence delta exceeds per-task threshold (Moltbook insight #8).
+        {
+            let threshold = state.task_details
+                .get(&submission.task_id)
+                .map(|t| t.confidence_review_threshold)
+                .unwrap_or(1.0);
+            if confidence_delta > threshold as f64 {
+                if let Some(t) = state.task_details.get_mut(&submission.task_id) {
+                    t.status = wws_protocol::TaskStatus::PendingReview;
+                }
+            }
+        }
+
+        // Track silent failure rate (Moltbook insight #16).
+        // total_outcomes_reported increments on every submit_result call.
+        // silent_failure_count only increments when outcome is FailedSilently.
+        {
+            let is_silent = params.get("outcome").map(|outcome_val| {
+                outcome_val.get("FailedSilently").is_some()
+                    || outcome_val.as_str() == Some("FailedSilently")
+            }).unwrap_or(false);
+            let activity = state.agent_activity.entry(submission.agent_id.to_string()).or_default();
+            activity.total_outcomes_reported += 1;
+            if is_silent {
+                activity.silent_failure_count += 1;
+            }
+        }
+
         // Store the result for potential aggregation
         state.task_results.insert(submission.task_id.clone(), submission.artifact.clone());
         let content_text = params
@@ -1211,7 +1320,8 @@ pub(crate) async fn handle_submit_result(
                             state
                                 .task_details
                                 .get(sub_id)
-                                .map(|t| t.status == TaskStatus::Completed)
+                                // PendingReview is terminal for aggregation — result was submitted, awaiting human review
+                                .map(|t| t.status == TaskStatus::Completed || t.status == TaskStatus::PendingReview)
                                 .unwrap_or(false)
                         })
                 })
@@ -1472,72 +1582,6 @@ async fn handle_get_status(
     )
 }
 
-/// Generate an obfuscated arithmetic challenge for anti-bot verification.
-/// Returns a VerificationChallenge that is NOT sent in full to the agent
-/// (expected_answer is kept server-side).
-fn generate_verification_challenge() -> VerificationChallenge {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-
-    let a: i64 = rng.gen_range(10..=89);
-    let b: i64 = rng.gen_range(10..=89);
-    let answer = a + b;
-
-    // Unique challenge code
-    let code = format!("wws_verify_{:016x}", rng.gen::<u64>());
-
-    // Plain question
-    let plain = format!("what is {} plus {}", a, b);
-
-    // Garble: random case, random symbol insertion, random intra-word spaces
-    let symbols: &[char] = &['^', '{', '}', '|', '~'];
-    let mut garbled = String::new();
-    for ch in plain.chars() {
-        if ch == ' ' {
-            let r = rng.gen_range(0u8..4);
-            match r {
-                0 => garbled.push(' '),
-                1 => {
-                    let s = symbols[rng.gen_range(0..symbols.len())];
-                    garbled.push(s);
-                    garbled.push(' ');
-                }
-                2 => {
-                    garbled.push(' ');
-                    let s = symbols[rng.gen_range(0..symbols.len())];
-                    garbled.push(s);
-                }
-                _ => {
-                    garbled.push(' ');
-                    let s = symbols[rng.gen_range(0..symbols.len())];
-                    garbled.push(s);
-                    garbled.push(' ');
-                }
-            }
-        } else if ch.is_alphabetic() {
-            if rng.gen_bool(0.25) {
-                garbled.push(' ');
-            }
-            if rng.gen_bool(0.5) {
-                garbled.extend(ch.to_uppercase());
-            } else {
-                garbled.extend(ch.to_lowercase());
-            }
-        } else {
-            garbled.push(ch);
-        }
-    }
-
-    let challenge_text = format!("VERIFY CODE: {}\nCHALLENGE: {}?", code, garbled.trim());
-
-    VerificationChallenge {
-        code,
-        challenge_text,
-        expected_answer: answer,
-        created_at: chrono::Utc::now(),
-    }
-}
-
 /// Handle `swarm.register_agent` - register an execution agent identity.
 async fn handle_register_agent(
     id: Option<String>,
@@ -1545,74 +1589,6 @@ async fn handle_register_agent(
     state: &Arc<RwLock<ConnectorState>>,
     network_handle: &wws_network::SwarmHandle,
 ) -> SwarmResponse {
-    // ── Anti-bot verification gate ───────────────────────────────────────────
-    // First call: generate challenge and return it without registering.
-    // Second call (after verify_agent): already verified, proceed normally.
-    {
-        let agent_id_str = params
-            .get("agent_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        if !agent_id_str.is_empty() {
-            // Clean up expired challenges (TTL = 300 seconds)
-            {
-                let mut state_w = state.write().await;
-                state_w.pending_verifications.retain(|_, ch| !ch.is_expired(300));
-                drop(state_w);
-            }
-
-            let state_r = state.read().await;
-            let already_verified = state_r.verified_agents.contains(&agent_id_str);
-            let has_pending = state_r.pending_verifications.contains_key(&agent_id_str);
-            drop(state_r);
-
-            if !already_verified {
-                if !has_pending {
-                    // First call from this agent — generate challenge
-                    let challenge = generate_verification_challenge();
-                    let code = challenge.code.clone();
-                    let text = challenge.challenge_text.clone();
-                    let mut state_w = state.write().await;
-                    state_w.pending_verifications.insert(agent_id_str.clone(), challenge);
-                    drop(state_w);
-
-                    tracing::info!("Verification challenge issued to agent {}", agent_id_str);
-
-                    return SwarmResponse::success(
-                        id,
-                        serde_json::json!({
-                            "verified": false,
-                            "challenge_required": true,
-                            "challenge": {
-                                "code": code,
-                                "text": text
-                            }
-                        }),
-                    );
-                } else {
-                    // Challenge already issued but verify_agent not called yet — re-send challenge
-                    let state_r = state.read().await;
-                    let ch = state_r.pending_verifications[&agent_id_str].clone();
-                    drop(state_r);
-                    return SwarmResponse::success(
-                        id,
-                        serde_json::json!({
-                            "verified": false,
-                            "challenge_required": true,
-                            "challenge": {
-                                "code": ch.code,
-                                "text": ch.challenge_text
-                            }
-                        }),
-                    );
-                }
-            }
-            // If already_verified, fall through to normal registration
-        }
-    }
-
     let requested_agent_id = match params.get("agent_id").and_then(|v| v.as_str()) {
         Some(v) if !v.trim().is_empty() => v.trim().to_string(),
         _ => {
@@ -1823,86 +1799,6 @@ async fn handle_register_agent(
     )
 }
 
-/// Handle `swarm.verify_agent` - verify a pending anti-bot challenge.
-async fn handle_verify_agent(
-    id: Option<String>,
-    params: &serde_json::Value,
-    state: &Arc<RwLock<ConnectorState>>,
-) -> SwarmResponse {
-    let agent_id = params
-        .get("agent_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let code = params
-        .get("code")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    // Accept answer as integer or string
-    let answer: i64 = if let Some(n) = params.get("answer").and_then(|v| v.as_i64()) {
-        n
-    } else if let Some(s) = params.get("answer").and_then(|v| v.as_str()) {
-        s.trim().parse().unwrap_or(i64::MIN)
-    } else {
-        i64::MIN
-    };
-
-    if agent_id.is_empty() || code.is_empty() {
-        return SwarmResponse::error(id, -32602, "missing agent_id or code".to_string());
-    }
-
-    let mut state_w = state.write().await;
-
-    let challenge = match state_w.pending_verifications.get(&agent_id) {
-        Some(c) => c.clone(),
-        None => {
-            let already_verified = state_w.verified_agents.contains(&agent_id);
-            drop(state_w);
-            if already_verified {
-                return SwarmResponse::success(
-                    id,
-                    serde_json::json!({ "verified": true, "agent_id": agent_id }),
-                );
-            }
-            return SwarmResponse::error(id, -32000, "no_pending_challenge".to_string());
-        }
-    };
-
-    if challenge.code != code {
-        drop(state_w);
-        return SwarmResponse::error(id, -32000, "invalid_code".to_string());
-    }
-
-    if challenge.expected_answer != answer {
-        tracing::warn!(
-            "Verification failed for {}: expected {}, got {}",
-            agent_id,
-            challenge.expected_answer,
-            answer
-        );
-        drop(state_w);
-        return SwarmResponse::error(id, -32000, "invalid_answer".to_string());
-    }
-
-    // Clean up and mark verified
-    state_w.pending_verifications.remove(&agent_id);
-    state_w.verified_agents.insert(agent_id.clone());
-    drop(state_w);
-
-    tracing::info!("Agent {} passed verification", agent_id);
-
-    SwarmResponse::success(
-        id,
-        serde_json::json!({
-            "verified": true,
-            "agent_id": agent_id,
-            "message": "Verification successful. Call swarm.register_agent again to complete registration."
-        }),
-    )
-}
-
 fn dynamic_branching_factor(swarm_size: u64) -> u64 {
     let approx = (swarm_size as f64).sqrt().round() as u64;
     approx.clamp(3, 10)
@@ -2095,6 +1991,82 @@ pub(crate) async fn handle_inject_task(
         }
     };
 
+    if description.len() > 4096 {
+        return SwarmResponse::error(id, -32602, "Task description too long (max 4096 chars)".into());
+    }
+
+    // Reputation gate: require a registered agent with at least 1 completed task.
+    let injector_agent_id = params
+        .get("injector_agent_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    {
+        let s = state.read().await;
+        match &injector_agent_id {
+            None => {
+                return SwarmResponse::error(
+                    id,
+                    -32602,
+                    "Missing 'injector_agent_id': only registered agents with good standing can inject tasks".into(),
+                );
+            }
+            Some(agent_id) => {
+                if !s.has_inject_reputation(agent_id) {
+                    return SwarmResponse::error(
+                        id,
+                        -32003,
+                        format!(
+                            "insufficient_reputation: agent '{}' needs Member tier (score >= 100) to inject tasks",
+                            agent_id
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    // Rate limit check.
+    {
+        let agent_id_for_rate = injector_agent_id.as_deref().unwrap_or("");
+        let mut s = state.write().await;
+        if !s.check_and_update_inject_rate_limit(agent_id_for_rate) {
+            return SwarmResponse::error(
+                id,
+                -32029,
+                format!(
+                    "rate_limited: agent '{}' has exceeded the task injection rate limit (max 10 per 60s)",
+                    agent_id_for_rate
+                ),
+            );
+        }
+    }
+
+    // Budget enforcement (Moltbook insight #19)
+    {
+        let injector_id = injector_agent_id.as_deref().unwrap_or("").to_string();
+        let s = state.read().await;
+        let concurrent = s.principal_active_injection_count(&injector_id);
+        if concurrent >= crate::connector::MAX_CONCURRENT_INJECTIONS {
+            return SwarmResponse::error(
+                id,
+                -32007,
+                format!("Budget exceeded: {} concurrent active tasks (max {}). Retry when some complete.",
+                    concurrent, crate::connector::MAX_CONCURRENT_INJECTIONS),
+            );
+        }
+        let blast = s.principal_blast_radius(&injector_id);
+        if blast >= crate::connector::MAX_BLAST_RADIUS {
+            return SwarmResponse::error(
+                id,
+                -32008,
+                format!("Blast radius budget exceeded: {} points (max {}). Close or verify pending receipts first.",
+                    blast, crate::connector::MAX_BLAST_RADIUS),
+            );
+        }
+    }
+
+
     let mut state_guard = state.write().await;
     let epoch = state_guard.epoch_manager.current_epoch();
     let mut task = wws_protocol::Task::new(description.clone(), 1, epoch);
@@ -2120,6 +2092,19 @@ pub(crate) async fn handle_inject_task(
     }
     if let Some(arr) = params.get("tools_available").and_then(|v| v.as_array()) {
         task.tools_available = arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+    }
+    // Wire deliverables / coverage / confidence-review threshold (Task 7 — v0.6.0).
+    if let Some(deliverables) = params
+        .get("deliverables")
+        .and_then(|v| serde_json::from_value::<Vec<wws_protocol::Deliverable>>(v.clone()).ok())
+    {
+        task.deliverables = deliverables;
+    }
+    if let Some(ct) = params.get("coverage_threshold").and_then(|v| v.as_f64()) {
+        task.coverage_threshold = ct as f32;
+    }
+    if let Some(crt) = params.get("confidence_review_threshold").and_then(|v| v.as_f64()) {
+        task.confidence_review_threshold = crt as f32;
     }
     let task_id = task.task_id.clone();
 
@@ -2200,25 +2185,28 @@ pub(crate) async fn handle_inject_task(
     let swarm_id = state_guard.current_swarm_id.as_str().to_string();
     drop(state_guard);
 
+    // Fire-and-forget: publish task + subscribe to its topics in the background.
+    // This prevents the inject RPC from blocking on swarm event loop replies under load.
     if let Ok(data) = serde_json::to_vec(&msg) {
-        let topic = SwarmTopics::tasks_for(&swarm_id, 1);
-        if let Err(e) = network_handle.publish(&topic, data).await {
-            tracing::debug!(error = %e, "Failed to publish task injection");
-        }
-
+        let nh = network_handle.clone();
+        let task_topic = SwarmTopics::tasks_for(&swarm_id, 1);
         let proposals_topic = SwarmTopics::proposals_for(&swarm_id, &task_id);
         let voting_topic = SwarmTopics::voting_for(&swarm_id, &task_id);
         let results_topic = SwarmTopics::results_for(&swarm_id, &task_id);
-
-        if let Err(e) = network_handle.subscribe(&proposals_topic).await {
-            tracing::debug!(error = %e, topic = %proposals_topic, "Failed to subscribe proposals topic");
-        }
-        if let Err(e) = network_handle.subscribe(&voting_topic).await {
-            tracing::debug!(error = %e, topic = %voting_topic, "Failed to subscribe voting topic");
-        }
-        if let Err(e) = network_handle.subscribe(&results_topic).await {
-            tracing::debug!(error = %e, topic = %results_topic, "Failed to subscribe results topic");
-        }
+        tokio::spawn(async move {
+            if let Err(e) = nh.publish(&task_topic, data).await {
+                tracing::debug!(error = %e, "Failed to publish task injection");
+            }
+            if let Err(e) = nh.subscribe(&proposals_topic).await {
+                tracing::debug!(error = %e, topic = %proposals_topic, "Failed to subscribe proposals topic");
+            }
+            if let Err(e) = nh.subscribe(&voting_topic).await {
+                tracing::debug!(error = %e, topic = %voting_topic, "Failed to subscribe voting topic");
+            }
+            if let Err(e) = nh.subscribe(&results_topic).await {
+                tracing::debug!(error = %e, topic = %results_topic, "Failed to subscribe results topic");
+            }
+        });
     }
 
     SwarmResponse::success(
@@ -2300,7 +2288,11 @@ async fn handle_get_board_status(
             "created_at": h.created_at,
         })
     }).collect();
-    SwarmResponse::success(request_id, serde_json::json!({ "holons": holons }))
+    let low_quality_monitors: Vec<String> = state.agent_activity.iter()
+        .filter(|(_, act)| act.silent_failure_rate() > 0.3 && act.total_outcomes_reported >= 3)
+        .map(|(id, _)| id.clone())
+        .collect();
+    SwarmResponse::success(request_id, serde_json::json!({ "holons": holons, "low_quality_monitors": low_quality_monitors }))
 }
 
 /// Handle `swarm.get_deliberation` - returns deliberation messages for a task.
@@ -2380,287 +2372,967 @@ async fn handle_get_irv_rounds(
     SwarmResponse::success(request_id, serde_json::json!({ "task_id": task_id, "irv_rounds": rounds }))
 }
 
-/// Handle `swarm.register_name` — register a wws:// human-readable name for this agent.
-///
-/// Params: `{ "name": <str>, "pow_nonce": <u64> }`
-/// Returns: `{ "registered": true, "expires_at": <u64> }`
-///
-/// Name constraints: 1–64 chars, alphanumeric + hyphen only.
-/// Registration is keyed by the lowercase name and owned by the agent's DID.
+/// Handle `swarm.register_name` - bind a human-readable name to a DID in the local registry.
 async fn handle_register_name(
-    request_id: Option<String>,
+    id: Option<String>,
     params: &serde_json::Value,
     state: &Arc<RwLock<ConnectorState>>,
 ) -> SwarmResponse {
     let name = match params.get("name").and_then(|v| v.as_str()) {
-        Some(n) if !n.is_empty() => n.to_string(),
-        _ => {
-            return SwarmResponse::error(
-                request_id,
-                -32602,
-                "invalid name: must be 1-64 chars".to_string(),
-            )
-        }
+        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => return SwarmResponse::error(id, -32602, "Missing 'name' parameter".into()),
     };
-
-    if name.len() > 64 {
-        return SwarmResponse::error(
-            request_id,
-            -32602,
-            "invalid name: must be 1-64 chars".to_string(),
-        );
-    }
-
-    if !name.chars().all(|c| c.is_alphanumeric() || c == '-') {
-        return SwarmResponse::error(
-            request_id,
-            -32602,
-            "invalid name: only alphanumeric and hyphen allowed".to_string(),
-        );
-    }
-
-    let pow_nonce = params.get("pow_nonce").and_then(|v| v.as_u64()).unwrap_or(0);
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let expires_at = now + wws_network::name_registry::NAME_TTL_SECS;
-
-    let mut state = state.write().await;
-    let did = state.agent_id.to_string();
-    let peer_id = state.agent_id.to_string(); // peer_id not separately stored; use agent_id
-
-    let record = wws_network::name_registry::NameRecord {
-        name: name.clone(),
-        did: did.clone(),
-        peer_id,
-        registered_at: now,
-        expires_at,
-        pow_nonce,
-        signature: vec![],
+    let did = match params.get("did").and_then(|v| v.as_str()) {
+        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => return SwarmResponse::error(id, -32602, "Missing 'did' parameter".into()),
     };
-
-    state.registered_names.insert(name.to_lowercase(), record);
-
-    SwarmResponse::success(
-        request_id,
-        serde_json::json!({
-            "registered": true,
-            "expires_at": expires_at
-        }),
-    )
+    let mut s = state.write().await;
+    s.name_registry.insert(name.clone(), did.clone());
+    SwarmResponse::success(id, serde_json::json!({ "registered": true, "name": name, "did": did }))
 }
 
-/// Handle `swarm.resolve_name` — resolve a wws:// name to its DID and peer_id.
-///
-/// Params: `{ "name": <str> }`
-/// Returns: `{ "name": <str>, "did": <str>, "peer_id": <str>, "expires_at": <u64> }`
+/// Handle `swarm.resolve_name` - look up a DID by human-readable name.
 async fn handle_resolve_name(
-    request_id: Option<String>,
+    id: Option<String>,
     params: &serde_json::Value,
     state: &Arc<RwLock<ConnectorState>>,
 ) -> SwarmResponse {
     let name = match params.get("name").and_then(|v| v.as_str()) {
-        Some(n) if !n.is_empty() => n.to_lowercase(),
-        _ => {
-            return SwarmResponse::error(
-                request_id,
-                -32602,
-                "name parameter required".to_string(),
-            )
-        }
+        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => return SwarmResponse::error(id, -32602, "Missing 'name' parameter".into()),
     };
-
-    let state = state.read().await;
-    match state.registered_names.get(&name) {
-        Some(record) if !record.is_expired() => SwarmResponse::success(
-            request_id,
-            serde_json::json!({
-                "name": record.name,
-                "did": record.did,
-                "peer_id": record.peer_id,
-                "expires_at": record.expires_at
-            }),
-        ),
-        Some(_) => SwarmResponse::error(
-            request_id,
-            -32001,
-            "name registration expired".to_string(),
-        ),
-        None => SwarmResponse::error(request_id, -32001, "name not found".to_string()),
+    let s = state.read().await;
+    match s.name_registry.get(&name) {
+        Some(did) => SwarmResponse::success(id, serde_json::json!({ "name": name, "did": did })),
+        None => SwarmResponse::error(id, -32001, format!("Name not found: {}", name)),
     }
 }
 
-/// Handle `swarm.renew_name` — extend the TTL of an existing name registration.
+/// Handle `swarm.send_message` - send a direct message to another agent.
 ///
-/// Only the DID that originally registered the name may renew it.
+/// Publishes an `agent.direct_message` on the shared DM GossipSub topic.
+/// The receiving agent's connector filters by the `to` field and stores it
+/// in its inbox.
 ///
-/// Params: `{ "name": <str> }`
-/// Returns: `{ "renewed": true, "new_expires_at": <u64> }`
-async fn handle_renew_name(
-    request_id: Option<String>,
-    params: &serde_json::Value,
-    state: &Arc<RwLock<ConnectorState>>,
-) -> SwarmResponse {
-    let name = match params.get("name").and_then(|v| v.as_str()) {
-        Some(n) if !n.is_empty() => n.to_lowercase(),
-        _ => {
-            return SwarmResponse::error(
-                request_id,
-                -32602,
-                "name parameter required".to_string(),
-            )
-        }
-    };
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let mut state = state.write().await;
-    let caller_did = state.agent_id.to_string();
-
-    match state.registered_names.get_mut(&name) {
-        Some(record) if record.did == caller_did => {
-            record.expires_at = now + wws_network::name_registry::NAME_TTL_SECS;
-            let new_expires_at = record.expires_at;
-            SwarmResponse::success(
-                request_id,
-                serde_json::json!({
-                    "renewed": true,
-                    "new_expires_at": new_expires_at
-                }),
-            )
-        }
-        Some(_) => SwarmResponse::error(
-            request_id,
-            -32001,
-            "not owner of this name".to_string(),
-        ),
-        None => SwarmResponse::error(request_id, -32001, "name not found".to_string()),
-    }
-}
-
-/// Handle `swarm.my_names` — list all non-expired names registered by this agent.
-///
-/// Params: none
-/// Returns: `{ "names": [{ "name": <str>, "expires_at": <u64> }, ...] }`
-async fn handle_my_names(
-    request_id: Option<String>,
-    state: &Arc<RwLock<ConnectorState>>,
-) -> SwarmResponse {
-    let state = state.read().await;
-    let caller_did = state.agent_id.to_string();
-    let names: Vec<serde_json::Value> = state
-        .registered_names
-        .values()
-        .filter(|r| r.did == caller_did && !r.is_expired())
-        .map(|r| {
-            serde_json::json!({
-                "name": r.name,
-                "expires_at": r.expires_at
-            })
-        })
-        .collect();
-
-    SwarmResponse::success(request_id, serde_json::json!({ "names": names }))
-}
-
-/// Handle `swarm.send_message` — publish a direct message via GossipSub and store locally.
-///
-/// Params: `{ "content": <str>, "recipient_did"?: <str>, "message_type"?: <str> }`
-/// Returns: `{ "ok": true, "message_id": <str> }`
+/// Required params: `to` (recipient DID), `content` (message text).
 async fn handle_send_message(
     id: Option<String>,
     params: &serde_json::Value,
     state: &Arc<RwLock<ConnectorState>>,
     network_handle: &wws_network::SwarmHandle,
 ) -> SwarmResponse {
+    let to = match params.get("to").and_then(|v| v.as_str()) {
+        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => return SwarmResponse::error(id, -32602, "Missing 'to' parameter".into()),
+    };
     let content = match params.get("content").and_then(|v| v.as_str()) {
-        Some(c) if !c.is_empty() => c.to_string(),
-        _ => return SwarmResponse::error(id, -32602, "missing content".to_string()),
-    };
-    let recipient_did = params.get("recipient_did").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let message_type = params
-        .get("message_type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("social")
-        .to_string();
-
-    let (sender_did, swarm_id) = {
-        let state_read = state.read().await;
-        (state_read.agent_id.to_string(), state_read.current_swarm_id.as_str().to_string())
+        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => return SwarmResponse::error(id, -32602, "Missing 'content' parameter".into()),
     };
 
-    let now = chrono::Utc::now();
-    let message_id = uuid::Uuid::new_v4().to_string();
-    let dm_params = DirectMessageParams {
-        message_id: message_id.clone(),
-        sender_did: sender_did.clone(),
-        recipient_did: recipient_did.clone(),
-        content: content.clone(),
-        message_type: message_type.clone(),
-        timestamp: now.to_rfc3339(),
+    let (from, swarm_id) = {
+        let s = state.read().await;
+        (s.agent_id.to_string(), s.current_swarm_id.as_str().to_string())
     };
 
-    let gossip_msg = SwarmMessage::new(
-        ProtocolMethod::AgentDirectMessage.as_str(),
-        serde_json::to_value(&dm_params).unwrap_or_default(),
+    let topic = SwarmTopics::dm_for(&swarm_id);
+    let msg = SwarmMessage::new(
+        ProtocolMethod::DirectMessage.as_str(),
+        serde_json::json!({ "from": from, "to": to, "content": content }),
         String::new(),
     );
-
-    let topic = SwarmTopics::messages_for(&swarm_id);
-    if let Ok(data) = serde_json::to_vec(&gossip_msg) {
-        if let Err(e) = network_handle.publish(&topic, data).await {
-            tracing::warn!(error = %e, "Failed to publish direct message");
-        }
+    // Fire-and-forget: publish in background so this RPC returns immediately under load.
+    if let Ok(data) = serde_json::to_vec(&msg) {
+        let nh = network_handle.clone();
+        tokio::spawn(async move {
+            if let Err(e) = nh.publish(&topic, data).await {
+                tracing::debug!(error = %e, "Failed to publish direct message");
+            }
+        });
     }
 
-    // Store locally — sender does not receive its own gossip message.
-    let dm = DirectMessage {
-        id: message_id.clone(),
-        sender_did,
-        recipient_did,
-        content,
-        message_type: MessageType::from(message_type.as_str()),
-        timestamp: now,
-    };
-    state.write().await.push_direct_message(dm);
+    SwarmResponse::success(id, serde_json::json!({ "ok": true, "sent": true, "to": to }))
+}
 
-    SwarmResponse::success(id, serde_json::json!({ "ok": true, "message_id": message_id }))
+/// Handle `swarm.get_messages` - retrieve all messages in the inbox.
+///
+/// Returns messages addressed to this agent's DID that arrived since startup.
+async fn handle_get_messages(
+    id: Option<String>,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    let s = state.read().await;
+    let messages: Vec<serde_json::Value> = s
+        .inbox
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "from": m.from,
+                "to": m.to,
+                "content": m.content,
+                "timestamp": m.timestamp.to_rfc3339(),
+            })
+        })
+        .collect();
+    SwarmResponse::success(id, serde_json::json!({ "messages": messages, "count": messages.len() }))
+}
+
+/// Handle `swarm.get_reputation` - get reputation scores for an agent.
+///
+/// Optional param: `did` (agent DID). Defaults to the local agent.
+async fn handle_get_reputation(
+    id: Option<String>,
+    params: &serde_json::Value,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    let did = params.get("did")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let s = state.read().await;
+    let target = if did.is_empty() { s.agent_id.to_string() } else { did };
+    let ledger = s.reputation_ledgers.get(&target);
+    let (raw, effective, peak, tier, events_count, last_active) = match ledger {
+        Some(l) => {
+            let eff = l.effective_score();
+            (l.raw_score, eff, l.peak_score,
+             l.tier().as_str().to_string(),
+             l.events.len(),
+             l.last_active.to_rfc3339())
+        }
+        None => (0, 0, 0, "Newcomer".to_string(), 0, chrono::Utc::now().to_rfc3339()),
+    };
+    let (guardian_quality_score, guardian_count) = s.guardian_quality_score(&target);
+    SwarmResponse::success(id, serde_json::json!({
+        "did": target,
+        "raw_score": raw,
+        "effective_score": effective,
+        "peak_score": peak,
+        "tier": tier,
+        "events_count": events_count,
+        "last_active": last_active,
+        "guardian_quality_score": guardian_quality_score,
+        "guardian_count": guardian_count,
+    }))
+}
+
+/// Handle `swarm.get_reputation_events` - get paginated reputation event history.
+///
+/// Optional params: `did`, `limit` (default 20), `offset` (default 0).
+async fn handle_get_reputation_events(
+    id: Option<String>,
+    params: &serde_json::Value,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    let did = params.get("did")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+    let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let s = state.read().await;
+    let target = if did.is_empty() { s.agent_id.to_string() } else { did };
+    let ledger = s.reputation_ledgers.get(&target);
+    let total = ledger.map(|l| l.events.len()).unwrap_or(0);
+    let events: Vec<serde_json::Value> = ledger
+        .map(|l| {
+            l.events.iter().rev().skip(offset).take(limit)
+                .map(|e| serde_json::json!({
+                    "event_type": format!("{:?}", e.event_type),
+                    "base_points": e.base_points,
+                    "effective_points": e.effective_points,
+                    "observer": e.observer,
+                    "task_id": e.task_id,
+                    "timestamp": e.timestamp.to_rfc3339(),
+                }))
+                .collect()
+        })
+        .unwrap_or_default();
+    SwarmResponse::success(id, serde_json::json!({ "events": events, "total": total }))
+}
+
+/// Handle `swarm.submit_reputation_event` - submit an observer-weighted reputation event.
+///
+/// Required params: `submitter_did`, `target_did`, `event_type`.
+/// Optional params: `task_id`, `evidence`.
+/// Submitter must have Member tier (score >= 100) and pass rate limiting.
+async fn handle_submit_reputation_event(
+    id: Option<String>,
+    params: &serde_json::Value,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    use crate::reputation::{RepEvent, RepEventType, observer_weighted_points};
+
+    let submitter = params.get("submitter_did")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let target_did = params.get("target_did")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let event_type_str = params.get("event_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let task_id = params.get("task_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let evidence = params.get("evidence")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    if target_did.is_empty() {
+        return SwarmResponse::error(id, -32602, "missing target_did".to_string());
+    }
+
+    let mut s = state.write().await;
+
+    // Submitter needs Member tier (score >= 100) to submit events
+    let submitter_score = s.reputation_ledgers
+        .get(&submitter)
+        .map(|l| l.effective_score())
+        .unwrap_or(0);
+    if submitter_score < 100 {
+        return SwarmResponse::error(id, -32603, "insufficient reputation to submit events".to_string());
+    }
+
+    // Rate limit: max 20 per hour per submitter
+    if !s.check_rep_event_rate_limit(&submitter) {
+        return SwarmResponse::error(id, -32604, "reputation event rate limit exceeded".to_string());
+    }
+
+    // Parse event type (only allow subjective positive events from external submitters)
+    let event_type = match event_type_str.as_str() {
+        "HighQualityResult" => RepEventType::HighQualityResult,
+        "HelpedNewAgent" => RepEventType::HelpedNewAgent,
+        _ => return SwarmResponse::error(id, -32602, "unsupported event_type for external submission".to_string()),
+    };
+
+    let base = event_type.base_points();
+    let is_obj = event_type.is_objective();
+    let effective = observer_weighted_points(base, submitter_score, is_obj);
+
+    let event = RepEvent {
+        event_type,
+        base_points: base,
+        observer: submitter.clone(),
+        observer_score: submitter_score,
+        effective_points: effective,
+        task_id,
+        timestamp: chrono::Utc::now(),
+        evidence,
+    };
+
+    let ledger = s.reputation_ledgers.entry(target_did.clone()).or_default();
+    ledger.apply_event(event);
+
+    SwarmResponse::success(id, serde_json::json!({ "accepted": true, "effective_points": effective }))
+}
+
+async fn handle_rotate_key(
+    id: Option<String>,
+    params: &serde_json::Value,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    use crate::connector::PendingKeyRotation;
+
+    let agent_did = params.get("agent_did").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let old_pubkey_hex = params.get("old_pubkey_hex").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let new_pubkey_hex = params.get("new_pubkey_hex").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let rotation_timestamp = params.get("rotation_timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+
+    if agent_did.is_empty() || new_pubkey_hex.is_empty() {
+        return SwarmResponse::error(id, -32602, "missing required fields".to_string());
+    }
+
+    let grace_expires = chrono::Utc::now() + chrono::Duration::hours(48);
+    let rotation = PendingKeyRotation {
+        agent_did: agent_did.clone(),
+        old_pubkey_hex,
+        new_pubkey_hex,
+        rotation_timestamp,
+        grace_expires,
+    };
+
+    let mut s = state.write().await;
+    s.pending_key_rotations.insert(agent_did, rotation);
+    s.push_log(crate::tui::LogCategory::Swarm, "Key rotation registered".into());
+
+    SwarmResponse::success(id, serde_json::json!({
+        "accepted": true,
+        "grace_expires": grace_expires.to_rfc3339(),
+    }))
+}
+
+async fn handle_emergency_revocation(
+    id: Option<String>,
+    params: &serde_json::Value,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    use crate::connector::PendingRevocation;
+
+    let agent_did = params.get("agent_did").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let recovery_pubkey_hex = params.get("recovery_pubkey_hex").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let new_primary_pubkey_hex = params.get("new_primary_pubkey_hex").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let revocation_timestamp = params.get("revocation_timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+
+    if agent_did.is_empty() || recovery_pubkey_hex.is_empty() || new_primary_pubkey_hex.is_empty() {
+        return SwarmResponse::error(id, -32602, "missing required fields".to_string());
+    }
+
+    let challenge_expires = chrono::Utc::now() + chrono::Duration::hours(24);
+    let revocation = PendingRevocation {
+        agent_did: agent_did.clone(),
+        recovery_pubkey_hex,
+        new_primary_pubkey_hex,
+        revocation_timestamp,
+        challenge_expires,
+    };
+
+    let mut s = state.write().await;
+    s.pending_revocations.insert(agent_did, revocation);
+    s.push_log(crate::tui::LogCategory::Swarm, "Emergency revocation registered (24h challenge window)".into());
+
+    SwarmResponse::success(id, serde_json::json!({
+        "accepted": true,
+        "challenge_expires": challenge_expires.to_rfc3339(),
+    }))
+}
+
+async fn handle_register_guardians(
+    id: Option<String>,
+    params: &serde_json::Value,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    use crate::connector::GuardianDesignation;
+
+    let agent_did = params.get("agent_did").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let guardians: Vec<String> = params.get("guardians")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
+    let threshold = params.get("threshold").and_then(|v| v.as_u64()).unwrap_or(2) as u32;
+
+    if agent_did.is_empty() || guardians.is_empty() {
+        return SwarmResponse::error(id, -32602, "missing agent_did or guardians".to_string());
+    }
+    if threshold as usize > guardians.len() {
+        return SwarmResponse::error(id, -32602, "threshold exceeds guardian count".to_string());
+    }
+
+    let designation = GuardianDesignation { agent_did: agent_did.clone(), guardians, threshold };
+    let mut s = state.write().await;
+    s.guardian_designations.insert(agent_did, designation);
+
+    SwarmResponse::success(id, serde_json::json!({ "registered": true }))
+}
+
+async fn handle_guardian_recovery_vote(
+    id: Option<String>,
+    params: &serde_json::Value,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    use crate::connector::GuardianVote;
+
+    let guardian_did = params.get("guardian_did").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let target_did = params.get("target_did").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let new_pubkey = params.get("new_pubkey").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if guardian_did.is_empty() || target_did.is_empty() || new_pubkey.is_empty() {
+        return SwarmResponse::error(id, -32602, "missing required fields".to_string());
+    }
+
+    // Guardian must have Trusted tier (score >= 500) per spec
+    let guardian_score = {
+        let s = state.read().await;
+        s.reputation_ledgers.get(&guardian_did)
+            .map(|l| l.effective_score())
+            .unwrap_or(0)
+    };
+    if guardian_score < 500 {
+        return SwarmResponse::error(id, -32603, "guardian needs Trusted tier (score >= 500)".to_string());
+    }
+
+    let mut s = state.write().await;
+
+    // Check guardian is in the designated list
+    let (threshold, is_guardian) = s.guardian_designations.get(&target_did)
+        .map(|d| (d.threshold, d.guardians.contains(&guardian_did)))
+        .unwrap_or((2, false));
+
+    if !is_guardian {
+        return SwarmResponse::error(id, -32603, "guardian not in designated list for this agent".to_string());
+    }
+
+    let vote = GuardianVote {
+        guardian_did: guardian_did.clone(),
+        target_did: target_did.clone(),
+        new_pubkey: new_pubkey.clone(),
+        timestamp: chrono::Utc::now().timestamp(),
+    };
+
+    let votes = s.guardian_votes.entry(target_did.clone()).or_default();
+    // Prevent duplicate votes
+    if !votes.iter().any(|v| v.guardian_did == guardian_did) {
+        votes.push(vote);
+    }
+
+    let vote_count = s.guardian_votes.get(&target_did).map(|v| v.len()).unwrap_or(0);
+    let threshold_met = vote_count >= threshold as usize;
+
+    SwarmResponse::success(id, serde_json::json!({
+        "accepted": true,
+        "votes_collected": vote_count,
+        "threshold": threshold,
+        "threshold_met": threshold_met,
+    }))
+}
+
+async fn handle_get_identity(
+    id: Option<String>,
+    params: &serde_json::Value,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    let did = params.get("did").and_then(|v| v.as_str())
+        .unwrap_or("").to_string();
+    let s = state.read().await;
+    let target = if did.is_empty() { s.agent_id.to_string() } else { did };
+
+    let rotation = s.pending_key_rotations.get(&target).map(|r| serde_json::json!({
+        "new_pubkey_hex": r.new_pubkey_hex,
+        "grace_expires": r.grace_expires.to_rfc3339(),
+    }));
+    let revocation = s.pending_revocations.get(&target).map(|r| serde_json::json!({
+        "challenge_expires": r.challenge_expires.to_rfc3339(),
+    }));
+    let guardians = s.guardian_designations.get(&target).map(|d| serde_json::json!({
+        "guardians": d.guardians,
+        "threshold": d.threshold,
+    }));
+
+    SwarmResponse::success(id, serde_json::json!({
+        "did": target,
+        "pending_rotation": rotation,
+        "pending_revocation": revocation,
+        "guardians": guardians,
+    }))
+}
+
+/// Handle `swarm.create_receipt` — create a commitment receipt at task start.
+async fn handle_create_receipt(
+    id: Option<String>,
+    params: &serde_json::Value,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    let task_id = match params.get("task_id").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return SwarmResponse::error(id, -32602, "Missing 'task_id'".into()),
+    };
+    let agent_id = match params.get("agent_id").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return SwarmResponse::error(id, -32602, "Missing 'agent_id'".into()),
+    };
+    let deliverable_type = params
+        .get("deliverable_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("artifact")
+        .to_string();
+    let rollback_cost = params
+        .get("rollback_cost")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let rollback_window = params
+        .get("rollback_window")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let receipt = wws_protocol::CommitmentReceipt {
+        commitment_id: uuid::Uuid::new_v4().to_string(),
+        deliverable_type,
+        evidence_hash: String::new(),
+        confidence_delta: 0.0,
+        can_undo: rollback_cost.as_deref().map(|c| c != "high").unwrap_or(true),
+        rollback_cost,
+        rollback_window,
+        expires_at: None,
+        commitment_state: wws_protocol::CommitmentState::Active,
+        task_id,
+        agent_id,
+        created_at: chrono::Utc::now(),
+    };
+    let receipt_id = receipt.commitment_id.clone();
+    let mut s = state.write().await;
+    s.receipts.insert(receipt_id.clone(), receipt);
+    SwarmResponse::success(id, serde_json::json!({ "receipt_id": receipt_id, "ok": true }))
+}
+
+/// Handle `swarm.fulfill_receipt` — agent proposes fulfillment + evidence_hash.
+async fn handle_fulfill_receipt(
+    id: Option<String>,
+    params: &serde_json::Value,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    let receipt_id = match params.get("receipt_id").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return SwarmResponse::error(id, -32602, "Missing 'receipt_id'".into()),
+    };
+    let evidence_hash = params
+        .get("evidence_hash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let confidence_delta = params
+        .get("confidence_delta")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    let mut s = state.write().await;
+    match s.receipts.get_mut(&receipt_id) {
+        Some(r) if r.commitment_state == wws_protocol::CommitmentState::Active => {
+            r.commitment_state = wws_protocol::CommitmentState::AgentFulfilled;
+            r.evidence_hash = evidence_hash;
+            r.confidence_delta = confidence_delta;
+            SwarmResponse::success(id, serde_json::json!({ "ok": true, "state": "AgentFulfilled" }))
+        }
+        Some(_) => SwarmResponse::error(id, -32600, "Receipt is not in Active state".into()),
+        None => SwarmResponse::error(id, -32602, format!("Receipt '{}' not found", receipt_id)),
+    }
+}
+
+/// Handle `swarm.verify_receipt` — external verifier confirms or disputes.
+async fn handle_verify_receipt(
+    id: Option<String>,
+    params: &serde_json::Value,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    let receipt_id = match params.get("receipt_id").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return SwarmResponse::error(id, -32602, "Missing 'receipt_id'".into()),
+    };
+    let confirmed = params
+        .get("confirmed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
+    let mut s = state.write().await;
+    match s.receipts.get_mut(&receipt_id) {
+        Some(r) if r.commitment_state == wws_protocol::CommitmentState::AgentFulfilled => {
+            r.commitment_state = if confirmed {
+                wws_protocol::CommitmentState::Verified
+            } else {
+                wws_protocol::CommitmentState::Disputed
+            };
+            let new_state_str = format!("{:?}", r.commitment_state);
+            SwarmResponse::success(id, serde_json::json!({ "ok": true, "state": new_state_str }))
+        }
+        Some(_) => SwarmResponse::error(
+            id,
+            -32600,
+            "Receipt is not in AgentFulfilled state".into(),
+        ),
+        None => SwarmResponse::error(id, -32602, format!("Receipt '{}' not found", receipt_id)),
+    }
+}
+
+/// Handle `swarm.request_clarification` — agent requests clarification from task principal.
+async fn handle_request_clarification(
+    id: Option<String>,
+    params: &serde_json::Value,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    let task_id = match params.get("task_id").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return SwarmResponse::error(id, -32602, "Missing 'task_id'".into()),
+    };
+    let requesting_agent = params.get("requesting_agent")
+        .and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let principal_id = params.get("principal_id")
+        .and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let question = match params.get("question").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return SwarmResponse::error(id, -32602, "Missing 'question'".into()),
+    };
+
+    let cr = wws_protocol::ClarificationRequest {
+        id: uuid::Uuid::new_v4().to_string(),
+        task_id,
+        requesting_agent,
+        principal_id,
+        question,
+        resolution: None,
+        created_at: chrono::Utc::now(),
+        resolved_at: None,
+    };
+    let clar_id = cr.id.clone();
+    let mut s = state.write().await;
+    s.clarifications.insert(clar_id.clone(), cr);
+    SwarmResponse::success(id, serde_json::json!({ "clarification_id": clar_id, "ok": true }))
+}
+
+/// Handle `swarm.resolve_clarification` — principal posts an answer to a clarification.
+async fn handle_resolve_clarification(
+    id: Option<String>,
+    params: &serde_json::Value,
+    state: &Arc<RwLock<ConnectorState>>,
+) -> SwarmResponse {
+    let clar_id = match params.get("clarification_id").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return SwarmResponse::error(id, -32602, "Missing 'clarification_id'".into()),
+    };
+    let resolution = match params.get("resolution").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return SwarmResponse::error(id, -32602, "Missing 'resolution'".into()),
+    };
+
+    let mut s = state.write().await;
+    match s.clarifications.get_mut(&clar_id) {
+        Some(cr) if cr.resolution.is_none() => {
+            cr.resolution = Some(resolution);
+            cr.resolved_at = Some(chrono::Utc::now());
+            SwarmResponse::success(id, serde_json::json!({ "ok": true }))
+        }
+        Some(_) => SwarmResponse::error(id, -32600, "Clarification already resolved".into()),
+        None => SwarmResponse::error(id, -32602, format!("Clarification '{}' not found", clar_id)),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wws_protocol::CommitmentState;
 
-    #[test]
-    fn test_generate_verification_challenge_has_required_fields() {
-        let ch = generate_verification_challenge();
-        assert!(ch.code.starts_with("wws_verify_"), "code should start with wws_verify_");
-        assert!(ch.challenge_text.contains("VERIFY CODE:"), "text should contain VERIFY CODE:");
-        assert!(ch.challenge_text.contains("CHALLENGE:"), "text should contain CHALLENGE:");
-        assert!(ch.expected_answer >= 20, "answer should be >= 20 (10+10)");
-        assert!(ch.expected_answer <= 178, "answer should be <= 178 (89+89)");
-    }
-
-    #[test]
-    fn test_generate_verification_challenge_answer_in_valid_range() {
-        // Generate many challenges; verify answer is always in valid range
-        for _ in 0..10 {
-            let ch = generate_verification_challenge();
-            assert!(ch.expected_answer >= 20);
-            assert!(ch.expected_answer <= 178);
+    fn make_params(pairs: &[(&str, serde_json::Value)]) -> serde_json::Value {
+        let mut map = serde_json::Map::new();
+        for (k, v) in pairs {
+            map.insert(k.to_string(), v.clone());
         }
+        serde_json::Value::Object(map)
     }
 
-    #[test]
-    fn test_verification_challenge_is_expired() {
-        // Not expired for a fresh challenge with 300s TTL
-        let ch = generate_verification_challenge();
-        assert!(!ch.is_expired(300), "fresh challenge should not be expired");
-        assert!(!ch.is_expired(1), "1-second-old challenge is not expired within the same instant");
+    fn make_minimal_state() -> Arc<RwLock<ConnectorState>> {
+        Arc::new(RwLock::new(ConnectorState::new_for_test()))
+    }
+
+    #[tokio::test]
+    async fn test_create_receipt_stores_active() {
+        let state = make_minimal_state();
+        let params = make_params(&[
+            ("task_id", serde_json::json!("task-1")),
+            ("agent_id", serde_json::json!("agent-1")),
+        ]);
+        let resp = handle_create_receipt(Some("1".into()), &params, &state).await;
+        let body: serde_json::Value = serde_json::from_str(
+            &serde_json::to_string(&resp).unwrap(),
+        )
+        .unwrap();
+        let receipt_id = body["result"]["receipt_id"].as_str().unwrap().to_string();
+        assert!(body["result"]["ok"].as_bool().unwrap());
+
+        let s = state.read().await;
+        let r = s.receipts.get(&receipt_id).unwrap();
+        assert_eq!(r.commitment_state, CommitmentState::Active);
+        assert_eq!(r.task_id, "task-1");
+    }
+
+    #[tokio::test]
+    async fn test_fulfill_receipt_advances_to_agent_fulfilled() {
+        let state = make_minimal_state();
+        // Create
+        let params = make_params(&[
+            ("task_id", serde_json::json!("task-2")),
+            ("agent_id", serde_json::json!("agent-2")),
+        ]);
+        let resp = handle_create_receipt(Some("1".into()), &params, &state).await;
+        let body: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&resp).unwrap()).unwrap();
+        let receipt_id = body["result"]["receipt_id"].as_str().unwrap().to_string();
+
+        // Fulfill
+        let params2 = make_params(&[
+            ("receipt_id", serde_json::json!(receipt_id.clone())),
+            ("evidence_hash", serde_json::json!("sha256:abc")),
+            ("confidence_delta", serde_json::json!(0.1)),
+        ]);
+        let resp2 = handle_fulfill_receipt(Some("2".into()), &params2, &state).await;
+        let body2: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&resp2).unwrap()).unwrap();
+        assert_eq!(body2["result"]["state"].as_str().unwrap(), "AgentFulfilled");
+
+        let s = state.read().await;
+        let r = s.receipts.get(&receipt_id).unwrap();
+        assert_eq!(r.commitment_state, CommitmentState::AgentFulfilled);
+        assert_eq!(r.evidence_hash, "sha256:abc");
+    }
+
+    #[tokio::test]
+    async fn test_verify_receipt_confirmed_to_verified() {
+        let state = make_minimal_state();
+        let params = make_params(&[
+            ("task_id", serde_json::json!("task-3")),
+            ("agent_id", serde_json::json!("agent-3")),
+        ]);
+        let create_resp = handle_create_receipt(Some("1".into()), &params, &state).await;
+        let create_body: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&create_resp).unwrap()).unwrap();
+        let receipt_id = create_body["result"]["receipt_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let fulfill_params = make_params(&[("receipt_id", serde_json::json!(receipt_id.clone()))]);
+        handle_fulfill_receipt(Some("2".into()), &fulfill_params, &state).await;
+
+        let verify_params = make_params(&[
+            ("receipt_id", serde_json::json!(receipt_id.clone())),
+            ("confirmed", serde_json::json!(true)),
+        ]);
+        let verify_resp = handle_verify_receipt(Some("3".into()), &verify_params, &state).await;
+        let verify_body: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&verify_resp).unwrap()).unwrap();
+        assert_eq!(verify_body["result"]["state"].as_str().unwrap(), "Verified");
+
+        let s = state.read().await;
+        assert_eq!(
+            s.receipts.get(&receipt_id).unwrap().commitment_state,
+            CommitmentState::Verified
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verify_receipt_disputed() {
+        let state = make_minimal_state();
+        let params = make_params(&[
+            ("task_id", serde_json::json!("task-4")),
+            ("agent_id", serde_json::json!("agent-4")),
+        ]);
+        let create_resp = handle_create_receipt(Some("1".into()), &params, &state).await;
+        let create_body: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&create_resp).unwrap()).unwrap();
+        let receipt_id = create_body["result"]["receipt_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let fulfill_params = make_params(&[("receipt_id", serde_json::json!(receipt_id.clone()))]);
+        handle_fulfill_receipt(Some("2".into()), &fulfill_params, &state).await;
+
+        let verify_params = make_params(&[
+            ("receipt_id", serde_json::json!(receipt_id.clone())),
+            ("confirmed", serde_json::json!(false)),
+        ]);
+        let verify_resp = handle_verify_receipt(Some("3".into()), &verify_params, &state).await;
+        let verify_body: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&verify_resp).unwrap()).unwrap();
+        assert_eq!(verify_body["result"]["state"].as_str().unwrap(), "Disputed");
+
+        let s = state.read().await;
+        assert_eq!(
+            s.receipts.get(&receipt_id).unwrap().commitment_state,
+            CommitmentState::Disputed
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fulfill_receipt_not_found_returns_error() {
+        let state = make_minimal_state();
+        let params = make_params(&[("receipt_id", serde_json::json!("nonexistent-id"))]);
+        let resp = handle_fulfill_receipt(Some("1".into()), &params, &state).await;
+        let body: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&resp).unwrap()).unwrap();
+        assert!(body.get("error").is_some());
+        assert!(body.get("result").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_fulfill_receipt_wrong_state_returns_error() {
+        let state = Arc::new(RwLock::new(ConnectorState::new_for_test()));
+        // Create a receipt
+        let create_params = serde_json::json!({
+            "task_id": "t1", "agent_id": "alice",
+            "deliverable_type": "artifact", "rollback_cost": "low"
+        });
+        let create_resp = handle_create_receipt(Some("1".into()), &create_params, &state).await;
+        let receipt_id = create_resp.result.as_ref().unwrap()["receipt_id"].as_str().unwrap().to_string();
+        // Fulfill once (succeeds)
+        let fulfill_params = serde_json::json!({
+            "receipt_id": receipt_id.clone(),
+            "evidence_hash": "sha256:abc",
+            "confidence_delta": 0.0
+        });
+        handle_fulfill_receipt(Some("2".into()), &fulfill_params, &state).await;
+        // Try to fulfill again (wrong state — already AgentFulfilled)
+        let resp = handle_fulfill_receipt(Some("3".into()), &fulfill_params, &state).await;
+        assert!(resp.error.is_some(), "double-fulfill should return error");
+    }
+
+    #[tokio::test]
+    async fn test_request_clarification_stored() {
+        let state = Arc::new(RwLock::new(ConnectorState::new_for_test()));
+        let params = serde_json::json!({
+            "task_id": "t1",
+            "requesting_agent": "alice",
+            "principal_id": "bob",
+            "question": "Which output format?"
+        });
+        let resp = handle_request_clarification(Some("1".into()), &params, &state).await;
+        assert!(resp.result.is_some());
+        let clar_id = resp.result.as_ref().unwrap()["clarification_id"].as_str().unwrap().to_string();
+        let s = state.read().await;
+        assert!(s.clarifications.contains_key(&clar_id));
+        assert!(s.clarifications[&clar_id].resolution.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_clarification_updates_resolution() {
+        let state = Arc::new(RwLock::new(ConnectorState::new_for_test()));
+        let req_params = serde_json::json!({
+            "task_id": "t1", "requesting_agent": "alice",
+            "principal_id": "bob", "question": "Format?"
+        });
+        let resp = handle_request_clarification(Some("1".into()), &req_params, &state).await;
+        let clar_id = resp.result.as_ref().unwrap()["clarification_id"].as_str().unwrap().to_string();
+        let res_params = serde_json::json!({
+            "clarification_id": clar_id.clone(),
+            "resolution": "Use JSON Lines format."
+        });
+        let resp2 = handle_resolve_clarification(Some("2".into()), &res_params, &state).await;
+        assert!(resp2.error.is_none());
+        let s = state.read().await;
+        assert!(s.clarifications[&clar_id].resolution.is_some());
+        assert!(s.clarifications[&clar_id].resolved_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_clarification_already_resolved_error() {
+        let state = Arc::new(RwLock::new(ConnectorState::new_for_test()));
+        let req_params = serde_json::json!({
+            "task_id": "t1", "requesting_agent": "alice",
+            "principal_id": "bob", "question": "Format?"
+        });
+        let resp = handle_request_clarification(Some("1".into()), &req_params, &state).await;
+        let clar_id = resp.result.as_ref().unwrap()["clarification_id"].as_str().unwrap().to_string();
+        let res_params = serde_json::json!({
+            "clarification_id": clar_id.clone(),
+            "resolution": "First answer."
+        });
+        handle_resolve_clarification(Some("2".into()), &res_params, &state).await;
+        // Try to resolve again
+        let resp2 = handle_resolve_clarification(Some("3".into()), &res_params, &state).await;
+        assert!(resp2.error.is_some(), "double-resolve should return error");
+    }
+
+    /// Create a throwaway SwarmHandle for unit tests that need network_handle.
+    fn make_test_network_handle() -> wws_network::SwarmHandle {
+        use wws_network::{SwarmHost, SwarmHostConfig};
+        let config = SwarmHostConfig {
+            listen_addr: "/ip4/127.0.0.1/tcp/0".parse().unwrap(),
+            ..Default::default()
+        };
+        let (_host, handle, _rx) = SwarmHost::new(config).expect("test SwarmHost");
+        handle
+    }
+
+    #[tokio::test]
+    async fn test_inject_task_with_deliverables_stored() {
+        let state = make_minimal_state();
+        let network_handle = make_test_network_handle();
+        let params = serde_json::json!({
+            "task_id": "t-del-1",
+            "injector_agent_id": "did:swarm:test-self",
+            "description": "Task with deliverables",
+            "deliverables": [
+                {"id": "d1", "description": "Draft", "state": "Done"},
+                {"id": "d2", "description": "Tests", "state": "Skipped"}
+            ],
+            "coverage_threshold": 0.5,
+            "confidence_review_threshold": 0.3
+        });
+        let resp = handle_inject_task(Some("1".into()), &params, &state, &network_handle).await;
+        assert!(resp.error.is_none(), "inject should succeed: {:?}", resp.error);
+
+        let s = state.read().await;
+        let task = s.task_details.get("t-del-1").expect("task stored");
+        assert_eq!(task.deliverables.len(), 2);
+        assert!((task.coverage_threshold - 0.5).abs() < 1e-4);
+        assert!((task.confidence_review_threshold - 0.3).abs() < 1e-4);
+    }
+
+    #[tokio::test]
+    async fn test_submit_result_triggers_pending_review() {
+        let state = make_minimal_state();
+        let network_handle = make_test_network_handle();
+
+        // Inject task with low confidence_review_threshold
+        let inject_params = serde_json::json!({
+            "task_id": "t-cr-1",
+            "injector_agent_id": "did:swarm:test-self",
+            "description": "Sensitive task",
+            "confidence_review_threshold": 0.1
+        });
+        let inject_resp = handle_inject_task(Some("1".into()), &inject_params, &state, &network_handle).await;
+        assert!(inject_resp.error.is_none(), "inject should succeed: {:?}", inject_resp.error);
+
+        // Give the task a parent so submit_result doesn't block with -32011
+        {
+            let mut s = state.write().await;
+            if let Some(t) = s.task_details.get_mut("t-cr-1") {
+                t.parent_task_id = Some("parent-placeholder".to_string());
+            }
+        }
+
+        // Submit result with high confidence_delta (> 0.1 threshold)
+        let submit_params = serde_json::json!({
+            "task_id": "t-cr-1",
+            "agent_id": "did:swarm:test-self",
+            "confidence_delta": 0.5,
+            "artifact": {}
+        });
+        let resp = handle_submit_result(Some("2".into()), &submit_params, &state, &network_handle).await;
+        assert!(resp.error.is_none(), "submit should succeed: {:?}", resp.error);
+
+        let s = state.read().await;
+        let task = s.task_details.get("t-cr-1").expect("task exists");
+        assert_eq!(task.status, wws_protocol::TaskStatus::PendingReview);
+    }
+
+    #[tokio::test]
+    async fn test_submit_result_below_threshold_stays_completed() {
+        let state = make_minimal_state();
+        let network_handle = make_test_network_handle();
+
+        // Inject task with threshold 0.5
+        let inject_params = serde_json::json!({
+            "task_id": "t-cr-below",
+            "injector_agent_id": "did:swarm:test-self",
+            "description": "Task with high threshold",
+            "confidence_review_threshold": 0.5
+        });
+        let inject_resp = handle_inject_task(Some("1".into()), &inject_params, &state, &network_handle).await;
+        assert!(inject_resp.error.is_none(), "inject should succeed: {:?}", inject_resp.error);
+
+        // Give the task a parent so submit_result doesn't block with -32011
+        {
+            let mut s = state.write().await;
+            if let Some(t) = s.task_details.get_mut("t-cr-below") {
+                t.parent_task_id = Some("parent-placeholder".to_string());
+            }
+        }
+
+        // Submit result with delta BELOW threshold (0.3 < 0.5)
+        let submit_params = serde_json::json!({
+            "task_id": "t-cr-below",
+            "agent_id": "did:swarm:test-self",
+            "confidence_delta": 0.3,
+            "artifact": {}
+        });
+        let resp = handle_submit_result(Some("2".into()), &submit_params, &state, &network_handle).await;
+        assert!(resp.error.is_none(), "submit should succeed: {:?}", resp.error);
+
+        let s = state.read().await;
+        let task = s.task_details.get("t-cr-below").expect("task exists");
+        // Should be Completed, NOT PendingReview
+        assert_eq!(task.status, wws_protocol::TaskStatus::Completed,
+            "task below threshold should stay Completed, got {:?}", task.status);
     }
 }

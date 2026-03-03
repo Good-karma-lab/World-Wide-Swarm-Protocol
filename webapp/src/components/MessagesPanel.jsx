@@ -20,7 +20,7 @@ export default function MessagesPanel({ messages }) {
         {filtered.map((m, i) => (
           <div key={i} style={{ marginBottom: 2 }}>
             <span style={{ color: 'var(--text-muted)' }}>[{m.timestamp}]</span>{' '}
-            <span style={{ color: 'var(--teal, #00e5b0)' }}>{m.topic}</span>{' '}
+            <span style={{ color: 'var(--platinum, #e8e8f0)' }}>{m.topic}</span>{' '}
             {m.method && <span style={{ color: '#a78bfa' }}>{m.method}</span>}{' '}
             {scrub(m.outcome || '')}
           </div>

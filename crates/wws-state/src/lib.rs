@@ -15,6 +15,7 @@ pub mod reputation;
 
 pub use content_store::ContentStore;
 pub use crdt::OrSet;
+pub use crdt::PnCounter;
 pub use granularity::{GranularityAlgorithm, GranularityEngine};
 pub use merkle_dag::MerkleDag;
 

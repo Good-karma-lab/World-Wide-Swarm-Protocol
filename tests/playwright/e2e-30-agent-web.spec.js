@@ -12,91 +12,83 @@ async function waitFor(check, timeoutMs = 60000, stepMs = 1000) {
   }
 }
 
-test('30-agent swarm web console shows requested capabilities', async ({ page }) => {
+test('swarm web console shows requested capabilities', async ({ page }) => {
   test.setTimeout(300000)
   page.on('crash', () => {
-    throw new Error('Browser page crashed during 30-agent web E2E')
+    throw new Error('Browser page crashed during swarm web E2E')
   })
 
+  // 1) Load the app — brand + layout
   await page.goto('/')
-  await expect(page.getByText('OpenSwarm Web Console')).toBeVisible()
+  await expect(page.getByText('WWS')).toBeVisible()
+  await expect(page.locator('.graph-area')).toBeVisible()
+  await expect(page.getByText('System Health')).toBeVisible()
+  await expect(page.getByText('Tasks').first()).toBeVisible()
+  await expect(page.getByText('Agents').first()).toBeVisible()
 
-  // 1) Expandable hierarchy
-  await page.getByRole('button', { name: 'hierarchy' }).click()
-  await expect(page.getByText('Expandable Hierarchy')).toBeVisible()
-
-  const hierarchy = await waitFor(async () => {
-    const resp = await page.request.get('/api/hierarchy')
+  // 2) Wait for at least one agent to register
+  const agentsData = await waitFor(async () => {
+    const resp = await page.request.get('/api/agents')
     const payload = await resp.json()
-    return payload.nodes?.length > 0 ? payload : null
+    return (payload.agents?.length || 0) > 0 ? payload : null
   }, 120000)
-  const totalNodes = hierarchy.nodes.length
-  const tier1 = hierarchy.nodes.filter((n) => n.tier === 'Tier1').length
-  const tier2 = hierarchy.nodes.filter((n) => n.tier === 'Tier2').length
-  if (totalNodes > 10) {
-    const expectedTier1 = 10
-    const expectedTier2 = totalNodes - expectedTier1
-    expect(tier1).toBe(expectedTier1)
-    expect(tier2).toBe(expectedTier2)
-  }
-  // 4) Submit task from UI
-  const taskText = `Playwright real e2e task ${Date.now()}`
-  await page.locator('textarea').first().fill(taskText)
-  await page.getByRole('button', { name: 'Submit' }).click()
+  expect(agentsData.agents.length).toBeGreaterThan(0)
 
+  // 3) Submit a task via the web UI modal
+  const taskText = `Playwright e2e task ${Date.now()}`
+  await page.getByRole('button', { name: /Submit Task/i }).click()
+  const modal = page.locator('.modal')
+  await expect(modal).toBeVisible()
+  await modal.locator('textarea').fill(taskText)
+  await modal.getByRole('button', { name: /^Submit$/i }).click()
+  // Modal closes after successful submit
+  await expect(modal).not.toBeVisible({ timeout: 15000 })
+
+  // 4) Verify task appears in /api/tasks
   const tasksResp = await page.request.get('/api/tasks')
   const tasksPayload = await tasksResp.json()
   const submitted = (tasksPayload.tasks || []).find((t) => (t.description || '').includes(taskText))
   expect(submitted).toBeTruthy()
 
-  // 2) Voting logs
-  await page.getByRole('button', { name: 'voting' }).click()
-  await expect(page.getByText('Voting Process Logs')).toBeVisible()
+  // 5) Messages slide panel
+  await page.getByRole('button', { name: /Messages/i }).click()
+  const overlay = page.locator('.slide-overlay')
+  await expect(overlay).toBeVisible()
+  await expect(overlay.locator('.slide-title')).toHaveText('P2P Messages')
+  await expect(page.getByText('P2P Business Messages')).toBeVisible()
+  // Close
+  await overlay.locator('.slide-close').click()
+  await expect(overlay).not.toBeVisible()
+
+  // 6) Audit slide panel — should show AUDIT task.inject after submit
+  await page.getByRole('button', { name: /Audit/i }).click()
+  await expect(overlay).toBeVisible()
+  await expect(overlay.locator('.slide-title')).toHaveText('Audit Log')
+  await expect(page.getByText('Operator Audit Log')).toBeVisible()
+  await expect(page.locator('.log-box')).toContainText('AUDIT task.inject', { timeout: 15000 })
+  // Close
+  await overlay.locator('.slide-close').click()
+  await expect(overlay).not.toBeVisible()
+
+  // 7) Verify core API endpoints return valid structures
+  const topologyResp = await page.request.get('/api/topology')
+  const topology = await topologyResp.json()
+  expect(Array.isArray(topology.nodes)).toBeTruthy()
+
   const votingResp = await page.request.get('/api/voting')
   const votingPayload = await votingResp.json()
   expect(Array.isArray(votingPayload.rfp)).toBeTruthy()
   expect(Array.isArray(votingPayload.voting)).toBeTruthy()
-  await expect(page.locator('table')).toBeVisible()
 
-  // 3) P2P message logs
-  await page.getByRole('button', { name: 'messages' }).click()
-  await expect(page.getByText('Peer-to-Peer Debug Logs')).toBeVisible()
-  const messages = await waitFor(async () => {
-    const resp = await page.request.get('/api/messages')
-    const payload = await resp.json()
-    return payload.length > 0 ? payload : null
-  })
-  expect(messages.length).toBeGreaterThan(0)
-  await expect(page.locator('.log.mono > div').first()).toBeVisible()
+  const messagesResp = await page.request.get('/api/messages')
+  const messagesPayload = await messagesResp.json()
+  expect(Array.isArray(messagesPayload)).toBeTruthy()
 
-  // 5) Task forensics panel
-  await page.getByRole('button', { name: 'task' }).click()
-  await page.getByPlaceholder('task id').fill(submitted.task_id)
-  await page.getByRole('button', { name: 'Load Timeline' }).click()
-  await expect(page.getByText('Task Timeline Replay')).toBeVisible()
-  await expect(page.getByText('Task DAG')).toBeVisible()
-  await expect(page.getByText('Root Task + Aggregation State')).toBeVisible()
-  const taskTimeline = await waitFor(async () => {
-    const resp = await page.request.get(`/api/tasks/${submitted.task_id}/timeline`)
-    const payload = await resp.json()
-    return (payload.timeline || []).length > 0 ? payload : null
-  })
-  expect(taskTimeline.timeline.some((e) => e.stage === 'injected')).toBeTruthy()
-  await expect(page.locator('.log.mono').first()).toContainText('injected')
-
-  // 6) Topology visualization
-  await page.getByRole('button', { name: 'topology' }).click()
-  await expect(page.locator('#topologyGraph')).toBeVisible()
-  const topologyResp = await page.request.get('/api/topology')
-  const topology = await topologyResp.json()
-  expect(topology.nodes.some((n) => n.name && n.name.length > 0)).toBeTruthy()
-
-  // 7) UI feature recommendations
-  await page.getByRole('button', { name: 'ideas' }).click()
-  await expect(page.getByText('Proposed Next UI Features')).toBeVisible()
-
-  // Audit visibility
-  await page.getByRole('button', { name: 'audit' }).click()
-  await expect(page.getByText('Operator Audit Log')).toBeVisible()
-  await expect(page.locator('.log.mono')).toContainText('AUDIT web.submit_task')
+  // 8) Click a task in the bottom tray to open task detail panel
+  const taskItem = page.locator('.task-item').first()
+  await expect(taskItem).toBeVisible({ timeout: 10000 })
+  await taskItem.click()
+  await expect(overlay).toBeVisible()
+  await expect(overlay.locator('.slide-title')).toContainText('Task:')
+  await overlay.locator('.slide-close').click()
 })

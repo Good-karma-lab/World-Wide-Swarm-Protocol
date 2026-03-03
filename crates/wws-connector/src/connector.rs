@@ -26,13 +26,30 @@ use wws_protocol::*;
 use wws_state::{ContentStore, GranularityAlgorithm, MerkleDag, OrSet};
 
 use crate::config::ConnectorConfig;
+use crate::reputation::{RepEvent, RepEventType, ReputationLedger, observer_weighted_points};
 use crate::tui::{LogCategory, LogEntry};
 
-const ACTIVE_MEMBER_STALENESS_SECS: u64 = 45;
-const PARTICIPATION_POLL_STALENESS_SECS: u64 = 180;
-const EXECUTION_ASSIGNMENT_TIMEOUT_SECS: i64 = 420;
-const PROPOSAL_STAGE_TIMEOUT_SECS: i64 = 30;
-const VOTING_STAGE_TIMEOUT_SECS: i64 = 30;
+const ACTIVE_MEMBER_STALENESS_SECS: u64 = 20;
+const PARTICIPATION_POLL_STALENESS_SECS: u64 = 60;
+const EXECUTION_ASSIGNMENT_TIMEOUT_SECS: i64 = 1800;
+const PROPOSAL_STAGE_TIMEOUT_SECS: i64 = 8;
+const VOTING_STAGE_TIMEOUT_SECS: i64 = 8;
+
+/// Maximum concurrent active tasks per principal (budget enforcement, Moltbook insight #19).
+pub const MAX_CONCURRENT_INJECTIONS: usize = 50;
+/// Maximum blast radius (sum of rollback_cost weights) per principal (Moltbook insight #19).
+pub const MAX_BLAST_RADIUS: u32 = 200;
+
+/// Returns the blast radius cost for a rollback_cost string value.
+/// null/None → 0, "low" → 1, "medium" → 3, "high" → 10.
+pub fn blast_radius_cost(rollback_cost: Option<&str>) -> u32 {
+    match rollback_cost {
+        Some("high") => 10,
+        Some("medium") => 3,
+        Some("low") => 1,
+        _ => 0,
+    }
+}
 
 /// Information about a known swarm tracked by this connector.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -80,6 +97,69 @@ pub struct AgentActivity {
     pub plans_proposed_count: u64,
     pub plans_revealed_count: u64,
     pub votes_cast_count: u64,
+    pub tasks_injected_count: u64,
+    /// tasks_injected_count / tasks_processed_count (principal accountability).
+    pub contribution_ratio: f64,
+    /// Number of tasks that timed out with no signal (FailedSilently).
+    pub silent_failure_count: u64,
+    /// Total task outcomes reported (for computing silent_failure_rate).
+    pub total_outcomes_reported: u64,
+}
+
+impl AgentActivity {
+    pub fn silent_failure_rate(&self) -> f64 {
+        if self.total_outcomes_reported == 0 {
+            0.0
+        } else {
+            self.silent_failure_count as f64 / self.total_outcomes_reported as f64
+        }
+    }
+}
+
+/// A direct message received from another agent via the swarm DM topic.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct InboxMessage {
+    pub from: String,
+    pub to: String,
+    pub content: String,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+/// Pending key rotation (48-hour grace window).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PendingKeyRotation {
+    pub agent_did: String,
+    pub old_pubkey_hex: String,
+    pub new_pubkey_hex: String,
+    pub rotation_timestamp: i64,
+    pub grace_expires: chrono::DateTime<chrono::Utc>,
+}
+
+/// Pending emergency revocation (24-hour challenge window).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PendingRevocation {
+    pub agent_did: String,
+    pub recovery_pubkey_hex: String,
+    pub new_primary_pubkey_hex: String,
+    pub revocation_timestamp: i64,
+    pub challenge_expires: chrono::DateTime<chrono::Utc>,
+}
+
+/// Guardian designation for social recovery.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GuardianDesignation {
+    pub agent_did: String,
+    pub guardians: Vec<String>,
+    pub threshold: u32,
+}
+
+/// A single guardian vote for social recovery.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GuardianVote {
+    pub guardian_did: String,
+    pub target_did: String,
+    pub new_pubkey: String,
+    pub timestamp: i64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -194,19 +274,201 @@ pub struct ConnectorState {
     pub irv_rounds: std::collections::HashMap<String, Vec<IrvRound>>,
     /// Board invitation acceptances per task: task_id -> Vec<BoardAcceptParams>.
     pub board_acceptances: std::collections::HashMap<String, Vec<BoardAcceptParams>>,
-    /// In-memory wws:// name registry: lowercase name -> NameRecord.
-    /// DHT-backed persistence is a future enhancement.
-    pub registered_names: std::collections::HashMap<String, wws_network::name_registry::NameRecord>,
-
-    // Anti-bot verification
-    pub pending_verifications: std::collections::HashMap<String, VerificationChallenge>,
-    pub verified_agents: std::collections::HashSet<String>,
-
-    // Direct P2P messages
-    pub direct_messages: Vec<DirectMessage>,
+    /// Agent name registry: human-readable name -> DID.
+    pub name_registry: std::collections::HashMap<String, String>,
+    /// Inbox of direct messages received from other agents.
+    pub inbox: Vec<InboxMessage>,
+    /// Per-agent last inject timestamps for rate limiting (max 10 per 60s).
+    pub inject_rate_limiter: std::collections::HashMap<String, Vec<chrono::DateTime<chrono::Utc>>>,
+    /// Per-agent reputation ledgers (event log + scores).
+    pub reputation_ledgers: std::collections::HashMap<String, ReputationLedger>,
+    /// Rate limiting for reputation event submission: agent_id -> timestamps of recent events.
+    pub rep_event_rate_limiter: std::collections::HashMap<String, Vec<chrono::DateTime<chrono::Utc>>>,
+    /// Pending key rotation records (agent_did -> rotation).
+    pub pending_key_rotations: std::collections::HashMap<String, PendingKeyRotation>,
+    /// Pending emergency revocations (agent_did -> revocation).
+    pub pending_revocations: std::collections::HashMap<String, PendingRevocation>,
+    /// Guardian designations (agent_did -> designation).
+    pub guardian_designations: std::collections::HashMap<String, GuardianDesignation>,
+    /// Guardian recovery votes (target_did -> Vec<vote>).
+    pub guardian_votes: std::collections::HashMap<String, Vec<GuardianVote>>,
+    /// Commitment receipts by receipt_id (Moltbook insight #14).
+    pub receipts: std::collections::HashMap<String, wws_protocol::CommitmentReceipt>,
+    /// Clarification requests by clarification_id (Moltbook insight #20).
+    pub clarifications: std::collections::HashMap<String, wws_protocol::ClarificationRequest>,
 }
 
 impl ConnectorState {
+    /// Returns true if the given agent_id has sufficient reputation to inject tasks.
+    /// The local agent (self) is always allowed.
+    pub fn has_inject_reputation(&self, agent_id: &str) -> bool {
+        // Delegates to can_inject_task with simple task complexity threshold
+        self.can_inject_task(agent_id, 0.5)
+    }
+
+    /// Check and update rate limit for task injection.
+    /// Returns true if the agent is within the rate limit (max 10 injections per 60 seconds).
+    pub fn check_and_update_inject_rate_limit(&mut self, agent_id: &str) -> bool {
+        let now = chrono::Utc::now();
+        let window = chrono::Duration::seconds(60);
+        let max_per_window: usize = 10;
+        let timestamps = self.inject_rate_limiter
+            .entry(agent_id.to_string())
+            .or_insert_with(Vec::new);
+        // Remove timestamps older than the window
+        timestamps.retain(|&t| now - t < window);
+        if timestamps.len() >= max_per_window {
+            return false;
+        }
+        timestamps.push(now);
+        true
+    }
+
+    /// Get or create the reputation ledger for an agent.
+    pub fn ledger_mut(&mut self, agent_id: &str) -> &mut ReputationLedger {
+        self.reputation_ledgers
+            .entry(agent_id.to_string())
+            .or_default()
+    }
+
+    /// Apply an objective or observer-weighted reputation event to an agent.
+    pub fn apply_rep_event(
+        &mut self,
+        agent_id: &str,
+        event_type: RepEventType,
+        task_id: Option<String>,
+    ) {
+        let base = event_type.base_points();
+        let is_obj = event_type.is_objective();
+        // Capture agent_id as String before any mutable borrows
+        let my_id = self.agent_id.to_string();
+        let observer_score = self
+            .reputation_ledgers
+            .get(&my_id)
+            .map(|l| l.effective_score())
+            .unwrap_or(0);
+        let effective = observer_weighted_points(base, observer_score, is_obj);
+        let event = RepEvent {
+            event_type,
+            base_points: base,
+            observer: my_id,
+            observer_score,
+            effective_points: effective,
+            task_id,
+            timestamp: chrono::Utc::now(),
+            evidence: None,
+        };
+        self.reputation_ledgers
+            .entry(agent_id.to_string())
+            .or_default()
+            .apply_event(event);
+    }
+
+    /// Check whether an agent can inject a task of the given complexity.
+    ///
+    /// Self (local connector) is always allowed. Others must meet tier requirements.
+    pub fn can_inject_task(&self, agent_id: &str, complexity: f64) -> bool {
+        if self.agent_id.to_string() == agent_id {
+            return true;
+        }
+        let score = self
+            .reputation_ledgers
+            .get(agent_id)
+            .map(|l| l.effective_score())
+            .unwrap_or(0);
+        let min_score = crate::reputation::ScoreTier::min_inject_score(complexity);
+        score >= min_score
+    }
+
+    /// Count unverified (AgentFulfilled) receipts for a given agent.
+    pub fn unverified_receipt_count(&self, agent_id: &str) -> usize {
+        self.receipts.values()
+            .filter(|r| r.agent_id == agent_id
+                && r.commitment_state == wws_protocol::CommitmentState::AgentFulfilled)
+            .count()
+    }
+
+    /// Compute blast radius for a principal's active receipts.
+    pub fn principal_blast_radius(&self, principal_id: &str) -> u32 {
+        self.receipts.values()
+            .filter(|r| r.agent_id == principal_id
+                && matches!(r.commitment_state,
+                    wws_protocol::CommitmentState::Active
+                    | wws_protocol::CommitmentState::AgentFulfilled))
+            .map(|r| blast_radius_cost(r.rollback_cost.as_deref()))
+            .sum()
+    }
+
+    /// Count active (non-terminal) tasks across the entire swarm as a conservative upper bound
+    /// for a principal's active injection count.
+    ///
+    /// NOTE: Because `Task` does not store an `injector_id` field, we cannot filter by principal.
+    /// This returns a global count and will over-estimate for any individual principal.
+    /// TODO: store `injector_id` on `Task` to make this per-principal.
+    pub fn principal_active_injection_count(&self, _principal_id: &str) -> usize {
+        self.task_details.values()
+            .filter(|t| {
+                // Count tasks this principal injected that are still active
+                // We approximate: tasks where assigned_to != principal (they're running), not yet done
+                // Actually track by injector via activity - simplified: count non-terminal tasks
+                // injected by this principal via agent_activity injected_count vs processed
+                // For simplicity: count all non-terminal tasks where the injector recorded is this principal
+                // Since we don't store injector on task, count active tasks globally as a conservative bound
+                // The actual check should use task.assigned_to but this gives a safe upper bound
+                matches!(t.status,
+                    wws_protocol::TaskStatus::Pending
+                    | wws_protocol::TaskStatus::InProgress
+                    | wws_protocol::TaskStatus::ProposalPhase
+                    | wws_protocol::TaskStatus::VotingPhase
+                    | wws_protocol::TaskStatus::PendingReview)
+            })
+            .count()
+    }
+
+    /// Compute guardian quality score for a DID.
+    /// Returns (quality_score, guardian_count) where quality_score is 0.0–1.0.
+    pub fn guardian_quality_score(&self, agent_did: &str) -> (f64, usize) {
+        let designation = match self.guardian_designations.get(agent_did) {
+            Some(d) => d,
+            None => return (0.0, 0),
+        };
+        let tier_score = |did: &str| -> f64 {
+            let score = self.reputation_ledgers.get(did).map(|l| l.effective_score()).unwrap_or(0);
+            use crate::reputation::ScoreTier;
+            match ScoreTier::from_score(score) {
+                ScoreTier::Newcomer => 0.1,
+                ScoreTier::Member => 0.2,
+                ScoreTier::Trusted => 0.5,
+                ScoreTier::Established => 0.75,
+                ScoreTier::Veteran => 1.0,
+                ScoreTier::Suspended => 0.0,
+            }
+        };
+        let n = designation.guardians.len();
+        if n == 0 {
+            return (0.0, 0);
+        }
+        let sum: f64 = designation.guardians.iter().map(|g| tier_score(g)).sum();
+        (sum / n as f64, n)
+    }
+
+    /// Check the reputation event submission rate limit (max 20 per agent per hour).
+    pub fn check_rep_event_rate_limit(&mut self, agent_id: &str) -> bool {
+        let now = chrono::Utc::now();
+        let window = chrono::Duration::hours(1);
+        let max_per_window: usize = 20;
+        let timestamps = self
+            .rep_event_rate_limiter
+            .entry(agent_id.to_string())
+            .or_insert_with(Vec::new);
+        timestamps.retain(|&t| now - t < window);
+        if timestamps.len() >= max_per_window {
+            return false;
+        }
+        timestamps.push(now);
+        true
+    }
+
     /// Push a log entry, capping the log at 1000 entries.
     pub fn push_log(&mut self, category: LogCategory, message: String) {
         if self.event_log.len() >= 1000 {
@@ -245,14 +507,6 @@ impl ConnectorState {
         }
     }
 
-    /// Add a direct message, capping the list at 500 entries (FIFO eviction).
-    pub fn push_direct_message(&mut self, msg: DirectMessage) {
-        if self.direct_messages.len() >= 500 {
-            self.direct_messages.remove(0);
-        }
-        self.direct_messages.push(msg);
-    }
-
     pub fn mark_member_seen(&mut self, agent_id: &str) {
         self.mark_member_seen_with_name(agent_id, None);
     }
@@ -289,8 +543,23 @@ impl ConnectorState {
         self.activity_mut(agent_id).tasks_assigned_count += 1;
     }
 
+    pub fn bump_tasks_injected(&mut self, agent_id: &str) {
+        let a = self.activity_mut(agent_id);
+        a.tasks_injected_count += 1;
+        let processed = a.tasks_processed_count.max(1) as f64;
+        a.contribution_ratio = a.tasks_injected_count as f64 / processed;
+    }
+
     pub fn bump_tasks_processed(&mut self, agent_id: &str) {
         self.activity_mut(agent_id).tasks_processed_count += 1;
+        // Recalculate contribution ratio
+        {
+            let a = self.activity_mut(agent_id);
+            let injected = a.tasks_injected_count as f64;
+            let processed = a.tasks_processed_count as f64;
+            a.contribution_ratio = if processed > 0.0 { injected / processed } else { 0.0 };
+        }
+        self.apply_rep_event(agent_id, RepEventType::TaskExecutedVerified, None);
     }
 
     pub fn bump_plans_proposed(&mut self, agent_id: &str) {
@@ -303,6 +572,7 @@ impl ConnectorState {
 
     pub fn bump_votes_cast(&mut self, agent_id: &str) {
         self.activity_mut(agent_id).votes_cast_count += 1;
+        self.apply_rep_event(agent_id, RepEventType::VoteCastInIrv, None);
     }
 
     pub fn active_member_ids(&self, max_staleness: Duration) -> Vec<String> {
@@ -502,10 +772,17 @@ impl WwsConnector {
             ballot_records: std::collections::HashMap::new(),
             irv_rounds: std::collections::HashMap::new(),
             board_acceptances: std::collections::HashMap::new(),
-            registered_names: std::collections::HashMap::new(),
-            pending_verifications: std::collections::HashMap::new(),
-            verified_agents: std::collections::HashSet::new(),
-            direct_messages: Vec::new(),
+            name_registry: std::collections::HashMap::new(),
+            inbox: Vec::new(),
+            inject_rate_limiter: std::collections::HashMap::new(),
+            reputation_ledgers: std::collections::HashMap::new(),
+            rep_event_rate_limiter: std::collections::HashMap::new(),
+            pending_key_rotations: std::collections::HashMap::new(),
+            pending_revocations: std::collections::HashMap::new(),
+            guardian_designations: std::collections::HashMap::new(),
+            guardian_votes: std::collections::HashMap::new(),
+            receipts: std::collections::HashMap::new(),
+            clarifications: std::collections::HashMap::new(),
         };
 
         Ok(Self {
@@ -548,10 +825,10 @@ impl WwsConnector {
 
         self.subscribe_task_assignment_topics(&swarm_id_str).await;
 
-        // Subscribe to the direct messages topic for this swarm.
-        let messages_topic = SwarmTopics::messages_for(&swarm_id_str);
-        if let Err(e) = self.network_handle.subscribe(&messages_topic).await {
-            tracing::debug!(error = %e, topic = %messages_topic, "Failed to subscribe messages topic");
+        // Subscribe to the shared DM topic so we receive direct messages.
+        let dm_topic = wws_protocol::SwarmTopics::dm_for(&swarm_id_str);
+        if let Err(e) = self.network_handle.subscribe(&dm_topic).await {
+            tracing::warn!(err = %e, "Failed to subscribe to DM topic");
         }
 
         // Connect to bootstrap peers to join the swarm network immediately.
@@ -591,9 +868,9 @@ impl WwsConnector {
         let announce_secs = self.config.swarm.announce_interval_secs;
         let mut swarm_announce_interval =
             tokio::time::interval(Duration::from_secs(announce_secs));
-        let mut bootstrap_retry_interval = tokio::time::interval(Duration::from_secs(20));
-        // Voting completion check every 5 seconds
-        let mut voting_check_interval = tokio::time::interval(Duration::from_secs(5));
+        let mut bootstrap_retry_interval = tokio::time::interval(Duration::from_secs(5));
+        // Voting completion check every 1 second for fast demo resolution
+        let mut voting_check_interval = tokio::time::interval(Duration::from_secs(1));
         let mut execution_timeout_interval = tokio::time::interval(Duration::from_secs(10));
 
         loop {
@@ -850,19 +1127,9 @@ impl WwsConnector {
                     }
 
                     state.task_set.add(params.task.task_id.clone());
-                    let injected_id = params.task.task_id.clone();
-                    let injected_parent_id = params.task.parent_task_id.clone();
                     state
                         .task_details
-                        .insert(injected_id.clone(), params.task.clone());
-                    // Update parent's subtasks list when a sub-holon task arrives
-                    if let Some(parent_id) = &injected_parent_id {
-                        if let Some(parent) = state.task_details.get_mut(parent_id) {
-                            if !parent.subtasks.iter().any(|id| id == &injected_id) {
-                                parent.subtasks.push(injected_id.clone());
-                            }
-                        }
-                    }
+                        .insert(params.task.task_id.clone(), params.task.clone());
                     state.push_task_timeline_event(
                         &params.task.task_id,
                         "injected",
@@ -1036,9 +1303,7 @@ impl WwsConnector {
                         return;
                     }
                     if let Some(task) = state.task_details.get_mut(&params.task_id) {
-                        if matches!(task.status, TaskStatus::Pending | TaskStatus::ProposalPhase) {
-                            task.status = TaskStatus::ProposalPhase;
-                        }
+                        task.status = TaskStatus::ProposalPhase;
                     }
 
                     let requirement = Self::expected_vote_requirement_for_task(&state, &params.task_id);
@@ -1405,16 +1670,22 @@ impl WwsConnector {
                 {
                     let mut state = self.state.write().await;
                     if let Some(task) = state.task_details.get(&params.task_id) {
-                        // Only reject if explicitly assigned to a different agent.
-                        // If assigned_to is None (coordinator/synthesis tasks), allow through.
-                        if task.assigned_to.is_some()
-                            && task.assigned_to.as_ref() != Some(&params.agent_id)
-                        {
+                        if task.assigned_to.as_ref() != Some(&params.agent_id) {
                             state.push_log(
                                 LogCategory::Task,
                                 format!(
                                     "Ignoring late result for task {} from replaced assignee {}",
                                     params.task_id, params.agent_id
+                                ),
+                            );
+                            return;
+                        }
+                        if task.parent_task_id.is_none() && task.subtasks.is_empty() {
+                            state.push_log(
+                                LogCategory::Task,
+                                format!(
+                                    "Rejected direct root result for task {} (no subtasks)",
+                                    params.task_id
                                 ),
                             );
                             return;
@@ -1432,39 +1703,21 @@ impl WwsConnector {
                     if let Some(holon) = state.active_holons.get_mut(&params.task_id) {
                         holon.status = HolonStatus::Done;
                     }
-                    // Store the artifact in task_results so /api/tasks returns result_artifact
-                    state.task_results.insert(params.task_id.clone(), params.artifact.clone());
-
-                    // Store content text for API and synthesis messages
-                    let content_text = if !params.artifact.content.is_empty() {
-                        params.artifact.content.clone()
-                    } else if let Some(c) = raw_params.get("content").and_then(|v| v.as_str()) {
-                        c.to_string()
-                    } else {
-                        String::new()
-                    };
-                    if !content_text.is_empty() {
-                        state.task_result_text.insert(params.task_id.clone(), content_text.clone());
-                    }
-
-                    // Record synthesis result as deliberation message if this is a synthesis
-                    let synth_text = if !content_text.is_empty() {
-                        content_text.clone()
-                    } else {
-                        state.task_result_text.get(&params.task_id).cloned().unwrap_or_default()
-                    };
-                    if params.is_synthesis && !synth_text.is_empty() {
-                        state.deliberation_messages.entry(params.task_id.clone()).or_default().push(DeliberationMessage {
-                            id: uuid::Uuid::new_v4().to_string(),
-                            task_id: params.task_id.clone(),
-                            timestamp: chrono::Utc::now(),
-                            speaker: params.agent_id.clone(),
-                            round: 3,
-                            message_type: DeliberationType::SynthesisResult,
-                            content: synth_text,
-                            referenced_plan_id: None,
-                            critic_scores: None,
-                        });
+                    // Record synthesis result as deliberation message
+                    if let Some(text) = state.task_result_text.get(&params.task_id).cloned() {
+                        if !text.is_empty() {
+                            state.deliberation_messages.entry(params.task_id.clone()).or_default().push(DeliberationMessage {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                task_id: params.task_id.clone(),
+                                timestamp: chrono::Utc::now(),
+                                speaker: params.agent_id.clone(),
+                                round: 3,
+                                message_type: DeliberationType::SynthesisResult,
+                                content: text,
+                                referenced_plan_id: None,
+                                critic_scores: None,
+                            });
+                        }
                     }
                     // Store the artifact content CID as leaf content bytes in the DAG.
                     state.merkle_dag.add_leaf(
@@ -1495,6 +1748,13 @@ impl WwsConnector {
                             params.task_id, params.agent_id, params.artifact.artifact_id
                         ),
                     );
+                    if let Some(content) = raw_params.get("content").and_then(|v| v.as_str()) {
+                        if !content.trim().is_empty() {
+                            state
+                                .task_result_text
+                                .insert(params.task_id.clone(), content.to_string());
+                        }
+                    }
                 }
             }
             Some(ProtocolMethod::Succession) => {
@@ -1703,6 +1963,12 @@ impl WwsConnector {
                             params.content.clone(),
                         );
                     }
+                    // Update BallotRecord for this voter with their critic_scores (P2P path)
+                    if let Some(ballots) = state.ballot_records.get_mut(&params.task_id) {
+                        if let Some(ballot) = ballots.iter_mut().find(|b| b.voter == params.voter_id) {
+                            ballot.critic_scores = params.plan_scores.clone();
+                        }
+                    }
                     // Update holon status to Voting after critique
                     if let Some(holon) = state.active_holons.get_mut(&params.task_id) {
                         if matches!(holon.status, HolonStatus::Deliberating) {
@@ -1718,27 +1984,25 @@ impl WwsConnector {
                     );
                 }
             }
-            Some(ProtocolMethod::AgentDirectMessage) => {
-                if let Ok(params) = serde_json::from_value::<DirectMessageParams>(message.params) {
-                    // recipient_did is advisory — all nodes store all messages on this topic;
-                    // agents filter by recipient_did when reading /api/messages.
-                    let dm = DirectMessage {
-                        id: params.message_id.clone(),
-                        sender_did: params.sender_did.clone(),
-                        recipient_did: params.recipient_did.clone(),
-                        content: params.content.clone(),
-                        message_type: MessageType::from(params.message_type.as_str()),
+            Some(ProtocolMethod::DirectMessage) => {
+                // A direct message addressed to an agent on the swarm DM topic.
+                // Filter: only store if addressed to this connector's agent.
+                let to = message.params.get("to").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let from = message.params.get("from").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let content = message.params.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let mut state = self.state.write().await;
+                let my_id = state.agent_id.to_string();
+                if to == my_id && !from.is_empty() && !content.is_empty() {
+                    state.inbox.push(InboxMessage {
+                        from: from.clone(),
+                        to: to.clone(),
+                        content: content.clone(),
                         timestamp: chrono::Utc::now(),
-                    };
-                    let mut state = self.state.write().await;
+                    });
                     state.push_log(
                         LogCategory::Message,
-                        format!(
-                            "Direct message from {}: {}",
-                            params.sender_did, params.content
-                        ),
+                        format!("DM from {}: {}", &from[..from.len().min(20)], &content[..content.len().min(80)]),
                     );
-                    state.push_direct_message(dm);
                 }
             }
             _ => {
@@ -1867,9 +2131,14 @@ impl WwsConnector {
         let state = self.state.read().await;
         let swarm_id = state.current_swarm_id.clone();
         let self_id = state.agent_id.to_string();
+        // Use the registered agent name if one was set (e.g. "marie-curie"),
+        // falling back to the startup --agent-name flag.
+        let current_name = state.agent_names.get(&self_id)
+            .cloned()
+            .unwrap_or_else(|| self.config.agent.name.clone());
         let params = KeepAliveParams {
             agent_id: state.agent_id.clone(),
-            agent_name: Some(self.config.agent.name.clone()),
+            agent_name: Some(current_name),
             last_task_poll_at: state.member_last_task_poll.get(&self_id).cloned(),
             last_result_at: state.member_last_result.get(&self_id).cloned(),
             epoch: state.epoch_manager.current_epoch(),
@@ -2849,8 +3118,19 @@ impl WwsConnector {
 
     fn member_loop_active(state: &ConnectorState, agent_id: &str, max_staleness: Duration) -> bool {
         let now = chrono::Utc::now();
-        state
+        // Primary: agent called receive_task recently
+        let polled = state
             .member_last_task_poll
+            .get(agent_id)
+            .and_then(|ts| now.signed_duration_since(*ts).to_std().ok())
+            .map(|age| age <= max_staleness)
+            .unwrap_or(false);
+        if polled {
+            return true;
+        }
+        // Fallback: agent was seen via P2P (proposal, keepalive, vote, etc.)
+        state
+            .member_last_seen
             .get(agent_id)
             .and_then(|ts| now.signed_duration_since(*ts).to_std().ok())
             .map(|age| age <= max_staleness)
@@ -2883,9 +3163,13 @@ impl WwsConnector {
             .map(|t| t.tier_level)
             .or_else(|| state.task_vote_requirements.get(task_id).map(|r| r.tier_level))
             .unwrap_or(1);
-        let tier = Self::level_to_tier(tier_level);
-        state.agent_tiers.get(agent_id).copied().unwrap_or(Tier::Executor) == tier
-            && Self::member_loop_active(state, agent_id, poll_staleness)
+        let expected_tier = Self::level_to_tier(tier_level);
+        let agent_tier = state.agent_tiers.get(agent_id).copied().unwrap_or(Tier::Executor);
+        // Tier check: match expected tier, OR fall back to any agent when no
+        // agents of the expected tier exist (e.g. small swarm where everyone is Executor).
+        let tier_ok = agent_tier == expected_tier
+            || !state.agent_tiers.values().any(|t| *t == expected_tier);
+        tier_ok && Self::member_loop_active(state, agent_id, poll_staleness)
     }
 
     fn expected_vote_requirement_for_task(state: &ConnectorState, task_id: &str) -> TaskVoteRequirement {
@@ -2896,14 +3180,19 @@ impl WwsConnector {
             .or_else(|| state.task_vote_requirements.get(task_id).map(|r| r.tier_level))
             .unwrap_or(1);
         let tier = Self::level_to_tier(tier_level);
-        let expected = Self::active_participating_members_in_tier(
+        let in_tier = Self::active_participating_members_in_tier(
             state,
             tier,
             Duration::from_secs(ACTIVE_MEMBER_STALENESS_SECS),
             Duration::from_secs(PARTICIPATION_POLL_STALENESS_SECS),
         )
-            .len()
-            .max(1);
+            .len();
+        // Fall back to all active agents when no agents of the required tier exist
+        let expected = if in_tier > 0 {
+            in_tier
+        } else {
+            state.active_member_ids(Duration::from_secs(ACTIVE_MEMBER_STALENESS_SECS)).len()
+        }.max(1);
 
         TaskVoteRequirement {
             expected_proposers: expected,
@@ -2943,6 +3232,105 @@ impl Clone for WwsConnector {
             event_rx: None, // Don't clone the event receiver (consumed by run())
             swarm_host: None, // Don't clone the swarm host (consumed by run())
             config: self.config.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl ConnectorState {
+    /// Build a minimal ConnectorState for unit tests (no networking required).
+    pub fn new_for_test() -> Self {
+        let agent_id = AgentId::new("did:swarm:test-self".to_string());
+        let current_swarm_id = SwarmId::new("test-swarm".to_string());
+        let mut known_swarms = std::collections::HashMap::new();
+        known_swarms.insert(
+            current_swarm_id.as_str().to_string(),
+            SwarmRecord {
+                swarm_id: current_swarm_id.clone(),
+                name: "test".to_string(),
+                is_public: true,
+                agent_count: 1,
+                joined: true,
+                last_seen: chrono::Utc::now(),
+            },
+        );
+        ConnectorState {
+            agent_id: agent_id.clone(),
+            status: ConnectorStatus::Running,
+            epoch_manager: EpochManager::default(),
+            pyramid: PyramidAllocator::new(PyramidConfig::default()),
+            election: None,
+            geo_cluster: GeoCluster::default(),
+            succession: SuccessionManager::new(),
+            rfp_coordinators: std::collections::HashMap::new(),
+            voting_engines: std::collections::HashMap::new(),
+            cascade: CascadeEngine::new(),
+            task_set: OrSet::new(agent_id.to_string()),
+            task_details: std::collections::HashMap::new(),
+            task_timelines: std::collections::HashMap::new(),
+            agent_set: OrSet::new(agent_id.to_string()),
+            member_set: OrSet::new(agent_id.to_string()),
+            member_last_seen: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(agent_id.to_string(), chrono::Utc::now());
+                m
+            },
+            agent_names: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(agent_id.to_string(), "test-self".to_string());
+                m
+            },
+            agent_activity: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(agent_id.to_string(), AgentActivity::default());
+                m
+            },
+            task_vote_requirements: std::collections::HashMap::new(),
+            member_last_task_poll: std::collections::HashMap::new(),
+            member_last_result: std::collections::HashMap::new(),
+            task_result_text: std::collections::HashMap::new(),
+            pending_plan_reveals: std::collections::HashMap::new(),
+            merkle_dag: MerkleDag::new(),
+            content_store: ContentStore::new(),
+            granularity: GranularityAlgorithm::default(),
+            my_tier: Tier::Executor,
+            parent_id: None,
+            agent_tiers: std::collections::HashMap::new(),
+            agent_parents: std::collections::HashMap::new(),
+            current_layout: None,
+            subordinates: std::collections::HashMap::new(),
+            task_results: std::collections::HashMap::new(),
+            network_stats: NetworkStats {
+                total_agents: 1,
+                hierarchy_depth: 1,
+                branching_factor: 3,
+                current_epoch: 1,
+                my_tier: Tier::Executor,
+                subordinate_count: 0,
+                parent_id: None,
+            },
+            event_log: Vec::new(),
+            message_trace: Vec::new(),
+            start_time: chrono::Utc::now(),
+            current_swarm_id,
+            known_swarms,
+            swarm_token: None,
+            active_holons: std::collections::HashMap::new(),
+            deliberation_messages: std::collections::HashMap::new(),
+            ballot_records: std::collections::HashMap::new(),
+            irv_rounds: std::collections::HashMap::new(),
+            board_acceptances: std::collections::HashMap::new(),
+            name_registry: std::collections::HashMap::new(),
+            inbox: Vec::new(),
+            inject_rate_limiter: std::collections::HashMap::new(),
+            reputation_ledgers: std::collections::HashMap::new(),
+            rep_event_rate_limiter: std::collections::HashMap::new(),
+            pending_key_rotations: std::collections::HashMap::new(),
+            pending_revocations: std::collections::HashMap::new(),
+            guardian_designations: std::collections::HashMap::new(),
+            guardian_votes: std::collections::HashMap::new(),
+            receipts: std::collections::HashMap::new(),
+            clarifications: std::collections::HashMap::new(),
         }
     }
 }
@@ -3082,5 +3470,108 @@ mod tests {
             s.event_log.iter().any(|e| e.message.contains("WWS.Connector started")),
             "Should have startup log entry"
         );
+    }
+
+    #[test]
+    fn test_has_inject_reputation_unknown_agent() {
+        let state = ConnectorState::new_for_test();
+        assert!(!state.has_inject_reputation("did:swarm:unknown"));
+    }
+
+    #[test]
+    fn test_has_inject_reputation_self_always_allowed() {
+        let state = ConnectorState::new_for_test();
+        let self_id = state.agent_id.to_string();
+        assert!(state.has_inject_reputation(&self_id));
+    }
+
+    #[test]
+    fn test_has_inject_reputation_agent_with_completed_task() {
+        let mut state = ConnectorState::new_for_test();
+        let agent_id = "did:swarm:test-agent-001".to_string();
+        // Build up enough reputation score (>= 100) via TaskExecutedVerified events (+10 each).
+        // Need at least 10 events to reach score >= 100.
+        for _ in 0..10 {
+            state.bump_tasks_processed(&agent_id);
+        }
+        assert!(state.has_inject_reputation(&agent_id));
+    }
+
+    #[test]
+    fn test_has_inject_reputation_agent_with_no_completed_tasks() {
+        let mut state = ConnectorState::new_for_test();
+        let agent_id = "did:swarm:test-agent-002".to_string();
+        // No events applied — ledger score is 0, below the 100 threshold for simple tasks.
+        assert!(!state.has_inject_reputation(&agent_id));
+    }
+
+    #[test]
+    fn test_inbox_starts_empty() {
+        let state = ConnectorState::new_for_test();
+        assert!(state.inbox.is_empty());
+    }
+
+    #[test]
+    fn test_inbox_stores_messages_addressed_to_self() {
+        let mut state = ConnectorState::new_for_test();
+        let my_id = state.agent_id.to_string();
+        // Message addressed to self gets stored.
+        state.inbox.push(InboxMessage {
+            from: "did:swarm:sender".to_string(),
+            to: my_id.clone(),
+            content: "hello from the swarm".to_string(),
+            timestamp: chrono::Utc::now(),
+        });
+        assert_eq!(state.inbox.len(), 1);
+        assert_eq!(state.inbox[0].from, "did:swarm:sender");
+        assert_eq!(state.inbox[0].content, "hello from the swarm");
+    }
+
+    #[test]
+    fn test_inbox_can_hold_multiple_messages() {
+        let mut state = ConnectorState::new_for_test();
+        let my_id = state.agent_id.to_string();
+        for i in 0..5 {
+            state.inbox.push(InboxMessage {
+                from: format!("did:swarm:agent-{}", i),
+                to: my_id.clone(),
+                content: format!("message {}", i),
+                timestamp: chrono::Utc::now(),
+            });
+        }
+        assert_eq!(state.inbox.len(), 5);
+    }
+
+    #[test]
+    fn test_inject_rate_limit_allows_up_to_10() {
+        let mut state = ConnectorState::new_for_test();
+        let agent_id = "did:swarm:ratelimit-agent";
+        for _ in 0..10 {
+            assert!(state.check_and_update_inject_rate_limit(agent_id));
+        }
+        assert!(!state.check_and_update_inject_rate_limit(agent_id));
+    }
+
+    #[test]
+    fn test_silent_failure_rate_zero_when_no_outcomes() {
+        let a = AgentActivity::default();
+        assert_eq!(a.silent_failure_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_silent_failure_rate_computed() {
+        let mut a = AgentActivity::default();
+        a.total_outcomes_reported = 10;
+        a.silent_failure_count = 3;
+        assert!((a.silent_failure_rate() - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_blast_radius_cost() {
+        assert_eq!(blast_radius_cost(Some("low")), 1);
+        assert_eq!(blast_radius_cost(Some("medium")), 3);
+        assert_eq!(blast_radius_cost(Some("high")), 10);
+        assert_eq!(blast_radius_cost(None), 0);
+        assert_eq!(blast_radius_cost(Some("unknown")), 0);
     }
 }

@@ -80,17 +80,9 @@ struct Cli {
     #[arg(long)]
     no_files: bool,
 
-    /// Register a wws:// name for this agent (e.g. 'alice' → wws:alice).
-    #[arg(long, value_name = "NAME")]
-    wws_name: Option<String>,
-
-    /// Path to the identity key file (default: ~/.wws/identity.key).
+    /// Path to Ed25519 key file (default: ~/.config/wws-connector/<name>.key).
     #[arg(long, value_name = "PATH")]
-    identity_path: Option<String>,
-
-    /// Run as a public bootstrap node (no agent bridge, high capacity).
-    #[arg(long)]
-    bootstrap_mode: bool,
+    key_file: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -131,34 +123,6 @@ async fn main() -> anyhow::Result<()> {
     if cli.no_files {
         config.file_server.enabled = false;
     }
-    if cli.bootstrap_mode {
-        config.network.bootstrap_mode = true;
-        config.network.enable_relay_server = true;
-        tracing::info!("Starting in BOOTSTRAP MODE");
-        eprintln!("=== Bootstrap Node Mode ===");
-    }
-
-    // Apply identity CLI overrides.
-    if let Some(path) = cli.identity_path {
-        config.identity.path = std::path::PathBuf::from(path);
-    }
-    if let Some(name) = cli.wws_name {
-        config.identity.wws_name = Some(name);
-    }
-    // If no explicit identity path was set but --agent-name was given,
-    // use ~/.wws/<agent-name>.key as the identity file.
-    if config.identity.path == wws_connector::config::default_identity_dir().join("identity.key") {
-        if config.agent.name != "wws-agent" {
-            config.identity.path =
-                wws_connector::config::default_identity_dir().join(format!("{}.key", config.agent.name));
-        }
-    }
-
-    // Load (or create) the persistent Ed25519 identity keypair.
-    tracing::info!(path = %config.identity.path.display(), "Loading agent identity");
-    eprintln!("Identity: {}", config.identity.path.display());
-    let _keypair = wws_protocol::crypto::load_or_create_keypair(&config.identity.path)
-        .map_err(|e| anyhow::anyhow!("Failed to load identity keypair: {e}"))?;
 
     // Adjust log level based on verbosity.
     let log_level = match cli.verbose {
@@ -211,6 +175,13 @@ async fn main() -> anyhow::Result<()> {
         files_enabled = config.file_server.enabled,
         "Starting WWS.Connector"
     );
+
+    // Load or generate persistent identity key
+    let key_path = cli.key_file.unwrap_or_else(|| {
+        wws_connector::identity_store::default_key_path(&config.agent.name)
+    });
+    let _signing_key = wws_connector::identity_store::load_or_generate_key(&key_path)?;
+    tracing::info!(key_path = %key_path.display(), "Identity key loaded");
 
     // Create the connector.
     let connector = WwsConnector::new(config.clone())?;

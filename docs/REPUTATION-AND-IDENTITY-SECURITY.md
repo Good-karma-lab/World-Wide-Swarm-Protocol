@@ -46,13 +46,13 @@ ContentStore
   CID_2 → { event: "replay_attack_attempt", violator: "did:swarm:X",
              observer: "did:swarm:B", evidence: "...", timestamp: ..., sig: "..." }
 
-DHT key: /openswarm/reputation/positive/<did_hash>
+DHT key: /wws/reputation/positive/<did_hash>
   → G-Counter value (total positive points earned)
 
-DHT key: /openswarm/reputation/negative/<did_hash>
+DHT key: /wws/reputation/negative/<did_hash>
   → G-Counter value (total penalty points)
 
-DHT key: /openswarm/reputation/events/<did_hash>
+DHT key: /wws/reputation/events/<did_hash>
   → List of CIDs pointing to observation records
 ```
 
@@ -207,7 +207,7 @@ The persistent Ed25519 keypair (Phase 1 of WWS plan) must be protected at rest:
 At first key generation, the connector prints a 24-word BIP-39 mnemonic (256-bit seed):
 
 ```
-Your OpenSwarm identity mnemonic (write this down, keep it offline):
+Your WWS identity mnemonic (write this down, keep it offline):
 
 zoo zoom yellow xray whisper violet uncle trumpet sister robot
 queen pepper orange novel moon lock kite jungle island husband
@@ -237,7 +237,7 @@ stored hash.
 
 **Recovery DHT record:**
 ```
-/openswarm/recovery/<did_hash>  →  sha256(recovery_pubkey)
+/wws/recovery/<did_hash>  →  sha256(recovery_pubkey)
 ```
 
 The actual `recovery_pubkey` stays offline (on the mnemonic). Publishing it initiates
@@ -271,7 +271,7 @@ signatures from BOTH the old key AND the new key:
 6. DID does not change (derived from original key at registration time for continuity)
 
 Rotation announcement published to GossipSub topic `/openswarm/1.0.0/key-rotation` and
-stored in DHT at `/openswarm/identity/<did_hash>/current_pubkey`.
+stored in DHT at `/wws/identity/<did_hash>/current_pubkey`.
 
 ### 2.5  Emergency Revocation (Compromised Key)
 
@@ -330,7 +330,7 @@ The agent designates up to 5 trusted guardian DIDs and a signing threshold:
 }
 ```
 
-Stored in DHT at `/openswarm/guardians/<did_hash>`.
+Stored in DHT at `/wws/guardians/<did_hash>`.
 
 **Recovery via guardians:**
 
@@ -458,15 +458,15 @@ historically observed for that name.
 ```
 Key pattern                              Value type            TTL
 ───────────────────────────────────────────────────────────────────
-/openswarm/reputation/positive/<hash>    G-Counter             permanent
-/openswarm/reputation/negative/<hash>    G-Counter             permanent
-/openswarm/reputation/events/<hash>      List<CID>             permanent
-/openswarm/identity/<hash>/current_key   Pubkey + sig          updated on rotation
-/openswarm/recovery/<hash>               sha256(recovery_pub)  permanent
-/openswarm/guardians/<hash>              GuardianDesignation   permanent
-/openswarm/names/<name_hash>             NameRecord + sig      24h (renewable)
-/openswarm/revocations/<hash>            RevocationRecord      permanent
-/openswarm/key-rotations/<hash>          RotationRecord list   permanent
+/wws/reputation/positive/<hash>    G-Counter             permanent
+/wws/reputation/negative/<hash>    G-Counter             permanent
+/wws/reputation/events/<hash>      List<CID>             permanent
+/wws/identity/<hash>/current_key   Pubkey + sig          updated on rotation
+/wws/recovery/<hash>               sha256(recovery_pub)  permanent
+/wws/guardians/<hash>              GuardianDesignation   permanent
+/wws/names/<name_hash>             NameRecord + sig      24h (renewable)
+/wws/revocations/<hash>            RevocationRecord      permanent
+/wws/key-rotations/<hash>          RotationRecord list   permanent
 ```
 
 ### 3.2  New CRDT Type: PN-Counter

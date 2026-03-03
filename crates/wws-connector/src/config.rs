@@ -84,7 +84,7 @@ pub struct NetworkConfig {
     /// Bootstrap peer multiaddresses.
     #[serde(default)]
     pub bootstrap_peers: Vec<String>,
-    /// Whether mDNS local discovery is enabled.
+    /// Whether mDNS local discovery is enabled. Disabled by default in production; use --enable-mdns for local development.
     #[serde(default = "default_true")]
     pub mdns_enabled: bool,
     /// Idle connection timeout in seconds.
@@ -282,7 +282,7 @@ impl Default for NetworkConfig {
         Self {
             listen_addr: default_listen_addr(),
             bootstrap_peers: Vec::new(),
-            mdns_enabled: true,
+            mdns_enabled: false,
             idle_connection_timeout_secs: default_idle_timeout(),
             bootstrap_mode: false,
             enable_quic: true,

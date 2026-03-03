@@ -1,7 +1,5 @@
-const BASE = ''
-
-export async function fetchJson(url, options = {}) {
-  const res = await fetch(BASE + url, options)
+export async function fetchJson(url, options) {
+  const res = await fetch(url, options)
   const ct = res.headers.get('content-type') || ''
   if (!ct.includes('application/json')) {
     const err = new Error(`HTTP ${res.status}`)
@@ -10,60 +8,40 @@ export async function fetchJson(url, options = {}) {
   }
   const data = await res.json()
   if (!res.ok) {
-    const err = new Error(data.error || `HTTP ${res.status}`)
+    const err = new Error(data.error || 'request_failed')
     err.status = res.status
+    err.payload = data
     throw err
   }
   return data
 }
 
-// ── Identity & Reputation ─────────────────────────────────────
-export const getIdentity       = () => fetchJson('/api/identity')
-export const getReputation     = () => fetchJson('/api/reputation')
-export const getRepEvents      = (limit=50, offset=0) =>
-  fetchJson(`/api/reputation/events?limit=${limit}&offset=${offset}`)
-
-// ── Names ─────────────────────────────────────────────────────
-export const getMyNames        = () => fetchJson('/api/names')
-export const registerName      = (name) => fetchJson('/api/names', {
-  method: 'POST',
-  headers: {'Content-Type':'application/json'},
-  body: JSON.stringify({name})
-})
-export const renewName         = (name) => fetchJson(`/api/names/${encodeURIComponent(name)}/renew`, { method: 'PUT' })
-export const releaseName       = (name) => fetchJson(`/api/names/${encodeURIComponent(name)}`, { method: 'DELETE' })
-
-// ── Network & Peers ───────────────────────────────────────────
-export const getNetwork        = () => fetchJson('/api/network')
-export const getPeers          = () => fetchJson('/api/peers')
-
-// ── Directory ─────────────────────────────────────────────────
-export const getDirectory      = (params = {}) => {
-  const q = new URLSearchParams()
-  if (params.q)      q.set('q', params.q)
-  if (params.tier)   q.set('tier', params.tier)
-  if (params.sort)   q.set('sort', params.sort || 'reputation')
-  if (params.limit)  q.set('limit', params.limit)
-  if (params.offset) q.set('offset', params.offset)
-  return fetchJson(`/api/directory?${q}`)
+export const api = {
+  health: () => fetchJson('/api/health'),
+  authStatus: () => fetchJson('/api/auth-status'),
+  hierarchy: () => fetchJson('/api/hierarchy'),
+  voting: () => fetchJson('/api/voting'),
+  votingTask: (taskId) => fetchJson(`/api/voting/${taskId}`),
+  messages: () => fetchJson('/api/messages'),
+  tasks: () => fetchJson('/api/tasks'),
+  agents: () => fetchJson('/api/agents'),
+  flow: () => fetchJson('/api/flow'),
+  topology: () => fetchJson('/api/topology'),
+  recommendations: () => fetchJson('/api/ui-recommendations'),
+  audit: () => fetchJson('/api/audit'),
+  taskTimeline: (taskId) => fetchJson(`/api/tasks/${taskId}/timeline`),
+  submitTask: (description, token) =>
+    fetchJson('/api/tasks', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-ops-token': token || ''
+      },
+      body: JSON.stringify({ description })
+    }),
+  holons: () => fetchJson('/api/holons').then(d => d.holons || []),
+  holonDetail: (taskId) => fetchJson(`/api/holons/${taskId}`),
+  taskDeliberation: (taskId) => fetchJson(`/api/tasks/${taskId}/deliberation`),
+  taskBallots: (taskId) => fetchJson(`/api/tasks/${taskId}/ballots`),
+  taskIrvRounds: (taskId) => fetchJson(`/api/tasks/${taskId}/irv-rounds`),
 }
-
-// ── Keys ──────────────────────────────────────────────────────
-export const getKeys           = () => fetchJson('/api/keys')
-
-// ── Existing endpoints (preserved) ───────────────────────────
-export const getTasks          = () => fetchJson('/api/tasks')
-export const getTask           = (id) => fetchJson(`/api/tasks/${id}`)
-export const submitTask        = (payload) => fetchJson('/api/tasks', {
-  method: 'POST',
-  headers: {'Content-Type':'application/json'},
-  body: JSON.stringify(payload)
-})
-export const getHolons         = () => fetchJson('/api/holons')
-export const getHolon          = (taskId) => fetchJson(`/api/holons/${taskId}`)
-export const getDeliberation   = (taskId) => fetchJson(`/api/tasks/${taskId}/deliberation`)
-export const getBallots        = (taskId) => fetchJson(`/api/tasks/${taskId}/ballots`)
-export const getIrvRounds      = (taskId) => fetchJson(`/api/tasks/${taskId}/irv-rounds`)
-export const getAuditLog       = () => fetchJson('/api/audit')
-export const getGraph          = () => fetchJson('/api/graph')
-export const getMessages       = () => fetchJson('/api/messages')

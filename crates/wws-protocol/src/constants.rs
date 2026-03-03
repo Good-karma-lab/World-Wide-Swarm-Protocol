@@ -31,7 +31,7 @@ pub const JSONRPC_VERSION: &str = "2.0";
 pub const PROTOCOL_VERSION: &str = "/wws/1.0.0";
 
 /// Proof of Work difficulty (number of leading zero bits required).
-pub const POW_DIFFICULTY: u32 = 16;
+pub const POW_DIFFICULTY: u32 = 24;
 
 /// Default public swarm ID. All nodes join this swarm by default.
 pub const DEFAULT_SWARM_ID: &str = "public";

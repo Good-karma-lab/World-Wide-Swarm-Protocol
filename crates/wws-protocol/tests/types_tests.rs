@@ -434,8 +434,8 @@ fn keepalive_interval_is_10_seconds() {
 }
 
 #[test]
-fn pow_difficulty_is_16() {
-    assert_eq!(wws_protocol::constants::POW_DIFFICULTY, 16);
+fn pow_difficulty_is_24() {
+    assert_eq!(wws_protocol::constants::POW_DIFFICULTY, 24);
 }
 
 #[test]

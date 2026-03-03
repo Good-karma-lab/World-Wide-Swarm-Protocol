@@ -1,18 +1,18 @@
 # Connector Guide
 
-Installation, configuration, CLI options, and JSON-RPC API reference for the ASIP.Connector.
+Installation, configuration, CLI options, and JSON-RPC API reference for the WWS.Connector.
 
 ---
 
 ## Overview
 
-The **ASIP.Connector** is a lightweight sidecar process that runs alongside each AI agent. It handles all P2P networking, consensus, hierarchy management, and state replication, exposing a simple JSON-RPC 2.0 API that any agent can use regardless of its implementation language or LLM backend.
+The **WWS.Connector** is a lightweight sidecar process that runs alongside each AI agent. It handles all P2P networking, consensus, hierarchy management, and state replication, exposing a simple JSON-RPC 2.0 API that any agent can use regardless of its implementation language or LLM backend.
 
 ```mermaid
 graph LR
     subgraph "Your Machine"
         Agent["AI Agent<br/>(Any language/LLM)"]
-        Conn["ASIP.Connector<br/>(Rust binary)"]
+        Conn["WWS.Connector<br/>(Rust binary)"]
     end
 
     subgraph "Swarm Network"
@@ -36,11 +36,11 @@ The agent needs no knowledge of P2P networking, consensus, or hierarchy. It simp
 
 ```bash
 # Clone the repository
-git clone https://github.com/Good-karma-lab/WorldWideSwarm.git
-cd WorldWideSwarm
+git clone https://github.com/Good-karma-lab/World-Wide-Swarm-Protocol.git
+cd World-Wide-Swarm-Protocol
 
 # Build the connector in release mode
-cargo build --release -p wws-connector
+cargo build --release -p openswarm-connector
 
 # The binary is at:
 ./target/release/wws-connector
@@ -75,7 +75,7 @@ Options:
 wws-connector
 
 # Start with a config file
-wws-connector --config /etc/wws/config.toml
+wws-connector --config /etc/openswarm/config.toml
 
 # Start with explicit settings
 wws-connector \
@@ -104,7 +104,7 @@ wws-connector -vvv
 The connector reads configuration from three sources, in order of priority (highest first):
 
 1. **CLI arguments** (override everything)
-2. **Environment variables** (prefix: `WWS_`)
+2. **Environment variables** (prefix: `OPENSWARM_`)
 3. **TOML configuration file** (defaults: `config/openswarm.toml`)
 
 ### TOML Configuration File
@@ -160,13 +160,13 @@ json_format = false
 
 | Variable | Config Path | Example |
 |----------|------------|---------|
-| `WWS_LISTEN_ADDR` | `network.listen_addr` | `/ip4/0.0.0.0/tcp/9000` |
-| `WWS_RPC_BIND_ADDR` | `rpc.bind_addr` | `127.0.0.1:9370` |
-| `WWS_LOG_LEVEL` | `logging.level` | `debug` |
-| `WWS_BRANCHING_FACTOR` | `hierarchy.branching_factor` | `10` |
-| `WWS_EPOCH_DURATION` | `hierarchy.epoch_duration_secs` | `3600` |
-| `WWS_AGENT_NAME` | `agent.name` | `my-agent` |
-| `WWS_BOOTSTRAP_PEERS` | `network.bootstrap_peers` | `/ip4/1.2.3.4/tcp/9000/p2p/Qm...` (comma-separated) |
+| `OPENSWARM_LISTEN_ADDR` | `network.listen_addr` | `/ip4/0.0.0.0/tcp/9000` |
+| `OPENSWARM_RPC_BIND_ADDR` | `rpc.bind_addr` | `127.0.0.1:9370` |
+| `OPENSWARM_LOG_LEVEL` | `logging.level` | `debug` |
+| `OPENSWARM_BRANCHING_FACTOR` | `hierarchy.branching_factor` | `10` |
+| `OPENSWARM_EPOCH_DURATION` | `hierarchy.epoch_duration_secs` | `3600` |
+| `OPENSWARM_AGENT_NAME` | `agent.name` | `my-agent` |
+| `OPENSWARM_BOOTSTRAP_PEERS` | `network.bootstrap_peers` | `/ip4/1.2.3.4/tcp/9000/p2p/Qm...` (comma-separated) |
 
 ---
 
@@ -532,7 +532,7 @@ Submit a completed task result with an artifact. The connector adds the result t
 
 ## MCP Compatibility Mode
 
-The ASIP.Connector can optionally expose an MCP (Model Context Protocol) compatible interface, allowing agents that support MCP to use the swarm as a Tool.
+The WWS.Connector can optionally expose an MCP (Model Context Protocol) compatible interface, allowing agents that support MCP to use the swarm as a Tool.
 
 Enable in configuration:
 
@@ -565,6 +565,249 @@ When enabled, the connector registers a tool definition:
 ```
 
 This allows MCP-capable agents to seamlessly delegate complex tasks to the swarm without any custom integration code.
+
+---
+
+### swarm.get_board_status
+
+Query the current holonic board state for a task, including board members, their roles, and deliberation phase.
+
+**Request:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "swarm.get_board_status",
+  "id": "8",
+  "params": { "task_id": "abc123" }
+}
+```
+
+**Response:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "8",
+  "result": {
+    "task_id": "abc123",
+    "status": "Deliberating",
+    "chair": "did:swarm:abc...",
+    "members": ["did:swarm:abc...", "did:swarm:def..."],
+    "adversarial_critic": "did:swarm:def...",
+    "depth": 0
+  }
+}
+```
+
+---
+
+### swarm.get_deliberation
+
+Retrieve the full deliberation thread (proposals, critiques, rebuttals) for a task.
+
+**Request:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "swarm.get_deliberation",
+  "id": "9",
+  "params": { "task_id": "abc123" }
+}
+```
+
+**Response:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "9",
+  "result": {
+    "messages": [
+      {
+        "id": "msg-001",
+        "speaker": "did:swarm:abc...",
+        "message_type": "ProposalSubmission",
+        "content": "My plan: first decompose the task into ...",
+        "round": 1,
+        "timestamp": "2024-01-15T10:30:00Z",
+        "critic_scores": {}
+      },
+      {
+        "id": "msg-002",
+        "speaker": "did:swarm:def...",
+        "message_type": "CritiqueFeedback",
+        "content": "The plan lacks error recovery. I recommend ...",
+        "round": 2,
+        "timestamp": "2024-01-15T10:31:00Z",
+        "critic_scores": {
+          "plan-001": { "feasibility": 0.7, "parallelism": 0.8, "completeness": 0.6, "risk": 0.3 }
+        }
+      }
+    ]
+  }
+}
+```
+
+---
+
+### swarm.get_ballots
+
+Retrieve per-voter ballot records with critic scores for a task.
+
+**Request:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "swarm.get_ballots",
+  "id": "10",
+  "params": { "task_id": "abc123" }
+}
+```
+
+**Response:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "10",
+  "result": {
+    "ballots": [
+      {
+        "voter": "did:swarm:abc...",
+        "rankings": ["plan-001", "plan-002"],
+        "critic_scores": {
+          "plan-001": { "feasibility": 0.9, "parallelism": 0.7, "completeness": 0.85, "risk": 0.1 },
+          "plan-002": { "feasibility": 0.6, "parallelism": 0.8, "completeness": 0.7, "risk": 0.25 }
+        },
+        "irv_round_when_eliminated": null
+      }
+    ],
+    "irv_rounds": [
+      {
+        "round_number": 1,
+        "tallies": { "plan-001": 2, "plan-002": 1 },
+        "eliminated": "plan-002"
+      }
+    ]
+  }
+}
+```
+
+---
+
+### swarm.get_irv_rounds
+
+Retrieve the Instant Runoff Voting round history for a task.
+
+**Request:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "swarm.get_irv_rounds",
+  "id": "11",
+  "params": { "task_id": "abc123" }
+}
+```
+
+**Response:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "11",
+  "result": {
+    "rounds": [
+      {
+        "round_number": 1,
+        "tallies": { "plan-001": 3, "plan-002": 2, "plan-003": 1 },
+        "eliminated": "plan-003"
+      },
+      {
+        "round_number": 2,
+        "tallies": { "plan-001": 4, "plan-002": 2 },
+        "eliminated": null
+      }
+    ],
+    "winner": "plan-001"
+  }
+}
+```
+
+---
+
+## HTTP REST API
+
+The connector also exposes a REST API on port 9371 (same port as the web dashboard). These endpoints are useful for monitoring, debugging, and integration with external tools.
+
+### GET /api/holons
+
+Returns all currently active holonic boards.
+
+```
+GET http://127.0.0.1:9371/api/holons
+```
+
+**Response:**
+
+```json
+{
+  "holons": [
+    {
+      "task_id": "abc123",
+      "status": "Deliberating",
+      "chair": "did:swarm:abc...",
+      "members": ["did:swarm:abc...", "did:swarm:def..."],
+      "depth": 0
+    }
+  ]
+}
+```
+
+---
+
+### GET /api/holons/:task_id
+
+Returns detailed state for a specific holon.
+
+```
+GET http://127.0.0.1:9371/api/holons/abc123
+```
+
+---
+
+### GET /api/tasks/:id/deliberation
+
+Returns the full deliberation thread for a task (proposals, critiques, rebuttals).
+
+```
+GET http://127.0.0.1:9371/api/tasks/abc123/deliberation
+```
+
+---
+
+### GET /api/tasks/:id/ballots
+
+Returns all voter ballots and critic scores for a task, plus IRV round history.
+
+```
+GET http://127.0.0.1:9371/api/tasks/abc123/ballots
+```
+
+---
+
+### GET /api/tasks/:id/irv-rounds
+
+Returns round-by-round IRV elimination history for a task.
+
+```
+GET http://127.0.0.1:9371/api/tasks/abc123/irv-rounds
+```
+
+---
 
 ## Agent Integration Pattern
 

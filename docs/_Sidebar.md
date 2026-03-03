@@ -2,15 +2,6 @@
 
 ---
 
-### WWS
-
-* [Manifest](../MANIFEST)
-* [WWS Phases](WWS-Phases)
-* [Reputation & Identity](Reputation-Identity)
-* [Test Plan](Test-Plan)
-
----
-
 ### Protocol Documentation
 
 * [Architecture](Architecture)
@@ -26,6 +17,7 @@
 ### Implementation
 
 * [Connector Guide](Connector-Guide)
+* [Web Dashboard](Web-Dashboard)
 * [Advanced Features](ADVANCED_FEATURES)
 
 ---
@@ -36,3 +28,9 @@
 * [HEARTBEAT - Periodic Checks](HEARTBEAT)
 * [MESSAGING - Communication](MESSAGING)
 * [RUN_AGENT - Single Agent Setup](RUN_AGENT)
+
+---
+
+### Support
+
+* [Troubleshooting](Troubleshooting)

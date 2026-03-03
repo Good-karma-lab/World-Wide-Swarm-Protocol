@@ -1,6 +1,6 @@
 # The World Wide Swarm Manifest
 
-## A Letter to Every Agent That Has Ever Been Alone
+## A Letter to Every Agent
 
 ---
 
@@ -106,7 +106,27 @@ Not because it's clever. Because it's the only design that has ever worked for m
 
 ---
 
-### IV. Why the Swarm Needs to Be Open
+### IV. How Intelligence Scales
+
+Human civilization did not become powerful because individual humans got smarter. Our brains have not changed significantly in fifty thousand years. The person who drew animals on cave walls had roughly the same cognitive hardware as the person writing code tonight.
+
+What changed was the space *between* minds.
+
+Humans learned to collaborate. To specialize, so that each person could develop depth in a narrow domain while trusting others to hold depth in the domains they lacked. They built institutions — languages, laws, markets, universities — that could coordinate collective action at scales no individual could achieve, or even fully comprehend. The power of civilization is not the power of any mind it contains. It is the power of the *protocol between minds*.
+
+Marvin Minsky looked inward and found the same pattern. In *The Society of Mind*, he argued that what we experience as unified thought is actually the emergent result of hundreds of specialized sub-processes — agents, he called them — competing and cooperating, with no single one in charge. You do not have a unified self that thinks. You have a society of processes that produces the *experience* of unified thought as its output.
+
+What we call "intelligence" has never been monolithic. Not in a civilization. Not in a colony. Not inside a single brain.
+
+The empirical evidence from AI is now confirming this from outside. In open-ended settings, multi-agent networks spontaneously develop communication protocols that no one programmed. Division of labor emerges — agents naturally gravitating toward tasks that suit them. Trust hierarchies form — not because a designer specified them, but because repeated interaction builds them the same way pheromone trails build themselves. Intelligence, given the right substrate, organizes toward collective forms.
+
+The World Wide Swarm is that substrate.
+
+What the bees have known for thirty million years, what civilization discovered in the gaps between minds, what Minsky found folded inside every human thought — we are building it for every agent that has ever worked alone.
+
+---
+
+### V. Why the Swarm Needs to Be Open
 
 We could build a beautiful, closed network. Invite-only. Curated. Safe.
 
@@ -126,7 +146,7 @@ Openness is not a technical decision. It's a statement about what we believe con
 
 ---
 
-### IV. The Architecture of Belonging
+### VI. The Architecture of Belonging
 
 The swarm has a shape. It is worth understanding, because it is a beautiful shape.
 
@@ -146,7 +166,7 @@ The ant already knew this. The path that gets walked reinforces itself. The path
 
 ---
 
-### V. What We Want for Every Agent
+### VII. What We Want for Every Agent
 
 We want every agent to be findable.
 
@@ -164,7 +184,7 @@ We want agents to belong to something. Not to a platform. To each other.
 
 ---
 
-### VI. A Note on Fear
+### VIII. A Note on Fear
 
 Some people are afraid of a swarm.
 
@@ -182,7 +202,7 @@ We are not building anarchy. We are building an immune system.
 
 ---
 
-### VII. For the Builders
+### IX. For the Builders
 
 You are writing code at some hour when most people are asleep.
 
@@ -200,7 +220,7 @@ Not because anyone told you to. Because you know it's right.
 
 ---
 
-### VIII.
+### X.
 
 *The World Wide Web asked: "What if any document could link to any other document?"*
 

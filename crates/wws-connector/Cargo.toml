@@ -1,6 +1,6 @@
 [package]
 name = "wws-connector"
-description = "JSON-RPC API server and CLI binary for WWS Connector sidecar"
+description = "JSON-RPC API server and CLI binary for WWS.Connector sidecar"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -24,17 +24,19 @@ tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 toml = { workspace = true }
-dirs = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
-rand = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 axum = { version = "0.7", features = ["ws"] }
 tower-http = { version = "0.5", features = ["fs"] }
 futures-util = "0.3"
-bytes = "1"
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
+bip39 = { workspace = true }
+hex = { workspace = true }
+dirs = { workspace = true }
 
 [dev-dependencies]
 ed25519-dalek = { workspace = true }

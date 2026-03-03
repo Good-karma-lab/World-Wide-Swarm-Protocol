@@ -14,10 +14,9 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 sha2 = { workspace = true }
-hex = { workspace = true }
 rand = { workspace = true }
-
 hickory-resolver = { workspace = true }
+hex = { workspace = true }
 
 # libp2p
 futures = "0.3"

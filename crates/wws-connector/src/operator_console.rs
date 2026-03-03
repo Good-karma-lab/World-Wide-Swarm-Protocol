@@ -113,7 +113,7 @@ impl OperatorConsole {
         let mut console_messages = Vec::new();
         console_messages.push((
             chrono::Utc::now(),
-            "WWS Operator Console ready. Type a task description and press Enter to inject it.".to_string(),
+            "OpenSwarm Operator Console ready. Type a task description and press Enter to inject it.".to_string(),
             Color::Cyan,
         ));
         console_messages.push((
@@ -573,7 +573,7 @@ impl OperatorConsole {
     /// Render the top status bar.
     fn render_status_bar(&self, frame: &mut Frame, area: Rect, snap: &ConsoleSnapshot) {
         let block = Block::default()
-            .title(" WWS Operator Console ")
+            .title(" OpenSwarm Operator Console ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan));
 
@@ -1190,6 +1190,7 @@ fn format_task_status(status: TaskStatus) -> &'static str {
         TaskStatus::Completed => "Completed",
         TaskStatus::Failed => "Failed",
         TaskStatus::Rejected => "Rejected",
+        TaskStatus::PendingReview => "Pending Review",
     }
 }
 
@@ -1365,10 +1366,17 @@ mod tests {
             ballot_records: std::collections::HashMap::new(),
             irv_rounds: std::collections::HashMap::new(),
             board_acceptances: std::collections::HashMap::new(),
-            registered_names: std::collections::HashMap::new(),
-            pending_verifications: std::collections::HashMap::new(),
-            verified_agents: std::collections::HashSet::new(),
-            direct_messages: Vec::new(),
+            name_registry: std::collections::HashMap::new(),
+            inbox: Vec::new(),
+            inject_rate_limiter: std::collections::HashMap::new(),
+            reputation_ledgers: std::collections::HashMap::new(),
+            rep_event_rate_limiter: std::collections::HashMap::new(),
+            pending_key_rotations: std::collections::HashMap::new(),
+            pending_revocations: std::collections::HashMap::new(),
+            guardian_designations: std::collections::HashMap::new(),
+            guardian_votes: std::collections::HashMap::new(),
+            receipts: std::collections::HashMap::new(),
+            clarifications: std::collections::HashMap::new(),
         };
 
         state.mark_member_seen("did:swarm:agent-1");
@@ -1443,10 +1451,17 @@ mod tests {
             ballot_records: std::collections::HashMap::new(),
             irv_rounds: std::collections::HashMap::new(),
             board_acceptances: std::collections::HashMap::new(),
-            registered_names: std::collections::HashMap::new(),
-            pending_verifications: std::collections::HashMap::new(),
-            verified_agents: std::collections::HashSet::new(),
-            direct_messages: Vec::new(),
+            name_registry: std::collections::HashMap::new(),
+            inbox: Vec::new(),
+            inject_rate_limiter: std::collections::HashMap::new(),
+            reputation_ledgers: std::collections::HashMap::new(),
+            rep_event_rate_limiter: std::collections::HashMap::new(),
+            pending_key_rotations: std::collections::HashMap::new(),
+            pending_revocations: std::collections::HashMap::new(),
+            guardian_designations: std::collections::HashMap::new(),
+            guardian_votes: std::collections::HashMap::new(),
+            receipts: std::collections::HashMap::new(),
+            clarifications: std::collections::HashMap::new(),
         };
 
         state.push_task_timeline_event("t1", "injected", "", None);
@@ -1584,10 +1599,17 @@ mod tests {
             ballot_records: std::collections::HashMap::new(),
             irv_rounds: std::collections::HashMap::new(),
             board_acceptances: std::collections::HashMap::new(),
-            registered_names: std::collections::HashMap::new(),
-            pending_verifications: std::collections::HashMap::new(),
-            verified_agents: std::collections::HashSet::new(),
-            direct_messages: Vec::new(),
+            name_registry: std::collections::HashMap::new(),
+            inbox: Vec::new(),
+            inject_rate_limiter: std::collections::HashMap::new(),
+            reputation_ledgers: std::collections::HashMap::new(),
+            rep_event_rate_limiter: std::collections::HashMap::new(),
+            pending_key_rotations: std::collections::HashMap::new(),
+            pending_revocations: std::collections::HashMap::new(),
+            guardian_designations: std::collections::HashMap::new(),
+            guardian_votes: std::collections::HashMap::new(),
+            receipts: std::collections::HashMap::new(),
+            clarifications: std::collections::HashMap::new(),
         };
 
         let mut console = OperatorConsole::new(Arc::new(RwLock::new(state)), handle_a.clone());
