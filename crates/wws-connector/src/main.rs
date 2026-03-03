@@ -197,6 +197,14 @@ async fn main() -> anyhow::Result<()> {
     let _signing_key = wws_connector::identity_store::load_or_generate_key(&key_path)?;
     tracing::info!(key_path = %key_path.display(), "Identity key loaded");
 
+    // Resolve bootstrap peers from all sources (CLI, DNS TXT, hardcoded).
+    let resolved_peers = wws_connector::connector::WwsConnector::resolve_all_bootstrap_peers(
+        &config.network.bootstrap_peers,
+        &config.network.bootstrap_domain,
+        config.network.no_default_bootstrap,
+    ).await;
+    config.network.bootstrap_peers = resolved_peers;
+
     // Create the connector.
     let connector = WwsConnector::new(config.clone())?;
 
