@@ -170,9 +170,9 @@ fn layout_tier1_uses_min_n_k() {
 fn tier_assignment_100_agents() {
     let alloc = default_allocator();
     let layout = alloc.compute_layout(100).unwrap();
-    // First 10 agents (rank 0..9) -> Tier1
-    assert_eq!(alloc.assign_tier(0, &layout), Tier::Tier1);
-    assert_eq!(alloc.assign_tier(9, &layout), Tier::Tier1);
+    // First 10 agents (rank 0..9) -> Tier0 (task initiators)
+    assert_eq!(alloc.assign_tier(0, &layout), Tier::Tier0);
+    assert_eq!(alloc.assign_tier(9, &layout), Tier::Tier0);
     // Remaining 90 agents (rank 10..99) -> Executor (depth=2, no intermediate tiers)
     assert_eq!(alloc.assign_tier(10, &layout), Tier::Executor);
     assert_eq!(alloc.assign_tier(99, &layout), Tier::Executor);
@@ -182,12 +182,12 @@ fn tier_assignment_100_agents() {
 fn tier_assignment_deep_hierarchy() {
     let alloc = default_allocator();
     let layout = alloc.compute_layout(850).unwrap();
-    // Tier-1: ranks 0..8 (9 agents)
-    assert_eq!(alloc.assign_tier(0, &layout), Tier::Tier1);
-    assert_eq!(alloc.assign_tier(8, &layout), Tier::Tier1);
-    // Tier-2: ranks 9..98 (90 agents)
-    assert_eq!(alloc.assign_tier(9, &layout), Tier::Tier2);
-    assert_eq!(alloc.assign_tier(98, &layout), Tier::Tier2);
+    // Tier-0: ranks 0..8 (9 agents — task initiators)
+    assert_eq!(alloc.assign_tier(0, &layout), Tier::Tier0);
+    assert_eq!(alloc.assign_tier(8, &layout), Tier::Tier0);
+    // Tier-1: ranks 9..98 (90 agents — board members)
+    assert_eq!(alloc.assign_tier(9, &layout), Tier::Tier1);
+    assert_eq!(alloc.assign_tier(98, &layout), Tier::Tier1);
     // Executor: ranks 99..849 (751 agents)
     assert_eq!(alloc.assign_tier(99, &layout), Tier::Executor);
     assert_eq!(alloc.assign_tier(849, &layout), Tier::Executor);

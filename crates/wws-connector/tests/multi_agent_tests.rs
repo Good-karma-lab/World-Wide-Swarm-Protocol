@@ -455,31 +455,31 @@ fn test_pyramid_assignment_for_multi_agent_swarm() {
     });
 
     // Assign tiers.
-    let mut tier1_count = 0;
+    let mut tier0_count = 0;
     let mut executor_count = 0;
 
     for (rank, _agent) in agents.iter().enumerate() {
         let tier = allocator.assign_tier(rank, &layout);
         match tier {
-            Tier::Tier1 => tier1_count += 1,
+            Tier::Tier0 => tier0_count += 1,
             Tier::Executor => executor_count += 1,
             _ => {}
         }
     }
 
     // With k=10 and 25 agents (depth=2):
-    // Tier1: ceil(25/10) = 3 leaders
+    // Tier0: ceil(25/10) = 3 injectors
     // Executor: remaining 22
-    assert_eq!(layout.tier1_count, 3, "Should have 3 Tier-1 leaders");
-    assert_eq!(tier1_count, 3, "Top 3 ranked agents should be Tier-1");
+    assert_eq!(layout.tier1_count, 3, "Should have 3 Tier-0 injectors");
+    assert_eq!(tier0_count, 3, "Top 3 ranked agents should be Tier-0");
     assert_eq!(executor_count, 22, "Remaining 22 should be Executors");
 
-    // Verify highest-scored agents get Tier-1.
+    // Verify highest-scored agents get Tier-0.
     for rank in 0..3 {
         assert_eq!(
             allocator.assign_tier(rank, &layout),
-            Tier::Tier1,
-            "Rank {} should be Tier-1",
+            Tier::Tier0,
+            "Rank {} should be Tier-0",
             rank
         );
     }

@@ -253,6 +253,11 @@ fn critic_score_serialization() {
 // ═══════════════════════════════════════════════════════════════
 
 #[test]
+fn tier0_depth_is_0() {
+    assert_eq!(Tier::Tier0.depth(), 0);
+}
+
+#[test]
 fn tier1_depth_is_1() {
     assert_eq!(Tier::Tier1.depth(), 1);
 }
@@ -275,10 +280,18 @@ fn executor_has_max_depth() {
 
 #[test]
 fn tier_ordering() {
+    assert!(Tier::Tier0.depth() < Tier::Tier1.depth());
     assert!(Tier::Tier1.depth() < Tier::Tier2.depth());
     assert!(Tier::Tier2.depth() < Tier::TierN(3).depth());
     assert!(Tier::TierN(3).depth() < Tier::TierN(4).depth());
     assert!(Tier::TierN(100).depth() < Tier::Executor.depth());
+}
+
+#[test]
+fn tier_serialization_tier0() {
+    let json = serde_json::to_string(&Tier::Tier0).unwrap();
+    let parsed: Tier = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed, Tier::Tier0);
 }
 
 #[test]
@@ -349,13 +362,13 @@ fn network_stats_serialization() {
 }
 
 #[test]
-fn network_stats_tier1_has_no_parent() {
+fn network_stats_tier0_has_no_parent() {
     let stats = NetworkStats {
         total_agents: 10,
         hierarchy_depth: 1,
         branching_factor: 10,
         current_epoch: 1,
-        my_tier: Tier::Tier1,
+        my_tier: Tier::Tier0,
         subordinate_count: 0,
         parent_id: None,
     };

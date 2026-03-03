@@ -197,7 +197,7 @@ impl CascadeEngine {
             task.status = TaskStatus::Pending;
 
             // Determine if this subtask needs further decomposition.
-            let requires_cascade = matches!(assignee_tier, Tier::Tier2 | Tier::TierN(_));
+            let requires_cascade = matches!(assignee_tier, Tier::Tier1 | Tier::Tier2 | Tier::TierN(_));
 
             let assignment = SubtaskAssignment {
                 task: task.clone(),

@@ -781,7 +781,7 @@ fn summarize_tiers(state: &ConnectorState) -> (usize, usize, usize, usize) {
 
     for tier in state.agent_tiers.values() {
         match tier {
-            wws_protocol::Tier::Tier1 => t1 += 1,
+            wws_protocol::Tier::Tier0 | wws_protocol::Tier::Tier1 => t1 += 1,
             wws_protocol::Tier::Tier2 => t2 += 1,
             wws_protocol::Tier::TierN(_) => tn += 1,
             wws_protocol::Tier::Executor => ex += 1,
@@ -790,7 +790,7 @@ fn summarize_tiers(state: &ConnectorState) -> (usize, usize, usize, usize) {
 
     if t1 + t2 + tn + ex == 0 {
         match state.my_tier {
-            wws_protocol::Tier::Tier1 => t1 = 1,
+            wws_protocol::Tier::Tier0 | wws_protocol::Tier::Tier1 => t1 = 1,
             wws_protocol::Tier::Tier2 => t2 = 1,
             wws_protocol::Tier::TierN(_) => tn = 1,
             wws_protocol::Tier::Executor => ex = 1,
@@ -837,6 +837,7 @@ fn summarize_flow(
 /// Format a Tier enum into a human-readable string.
 fn format_tier(tier: &wws_protocol::Tier) -> String {
     match tier {
+        wws_protocol::Tier::Tier0 => "Tier0".to_string(),
         wws_protocol::Tier::Tier1 => "Tier1".to_string(),
         wws_protocol::Tier::Tier2 => "Tier2".to_string(),
         wws_protocol::Tier::TierN(n) => format!("Tier{}", n),

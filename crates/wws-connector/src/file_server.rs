@@ -824,15 +824,15 @@ async fn api_topology(State(web): State<WebState>) -> Json<serde_json::Value> {
             })
             .collect();
 
-        // Count Tier1 agents — only show virtual root when multiple Tier1 agents.
-        let tier1_agents: Vec<&String> = s
+        // Count Tier0 agents — only show virtual root when multiple Tier0 agents.
+        let tier0_agents: Vec<&String> = s
             .agent_tiers
             .iter()
-            .filter(|(id, tier)| **tier == Tier::Tier1 && members.iter().any(|m| m == *id))
+            .filter(|(id, tier)| **tier == Tier::Tier0 && members.iter().any(|m| m == *id))
             .map(|(id, _)| id)
             .collect();
 
-        if tier1_agents.len() > 1 {
+        if tier0_agents.len() > 1 {
             nodes.push(serde_json::json!({
                 "id": "zero0",
                 "name": "WWS",
@@ -852,15 +852,15 @@ async fn api_topology(State(web): State<WebState>) -> Json<serde_json::Value> {
             edges.push(serde_json::json!({"source": parent, "target": child, "kind": "hierarchy"}));
         }
 
-        let tier1_agents: Vec<&String> = s
+        let tier0_agents: Vec<&String> = s
             .agent_tiers
             .iter()
-            .filter(|(id, tier)| **tier == Tier::Tier1 && members.iter().any(|m| m == *id))
+            .filter(|(id, tier)| **tier == Tier::Tier0 && members.iter().any(|m| m == *id))
             .map(|(id, _)| id)
             .collect();
 
-        if tier1_agents.len() > 1 {
-            for id in &tier1_agents {
+        if tier0_agents.len() > 1 {
+            for id in &tier0_agents {
                 edges.push(serde_json::json!({
                     "source": "zero0",
                     "target": id,
@@ -907,6 +907,7 @@ fn collect_known_members(s: &ConnectorState) -> Vec<String> {
 
 fn tier_from_level(level: u32) -> Tier {
     match level {
+        0 => Tier::Tier0,
         1 => Tier::Tier1,
         2 => Tier::Tier2,
         n => Tier::TierN(n),

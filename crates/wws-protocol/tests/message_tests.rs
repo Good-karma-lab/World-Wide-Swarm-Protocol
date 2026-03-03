@@ -379,14 +379,14 @@ fn succession_params_serialization() {
 fn tier_assignment_params_serialization() {
     let params = TierAssignmentParams {
         assigned_agent: AgentId::new("did:swarm:agent".into()),
-        tier: Tier::Tier2,
+        tier: Tier::Tier1,
         parent_id: AgentId::new("did:swarm:leader".into()),
         epoch: 106,
         branch_size: 85,
     };
     let json = serde_json::to_string(&params).unwrap();
     let parsed: TierAssignmentParams = serde_json::from_str(&json).unwrap();
-    assert_eq!(parsed.tier, Tier::Tier2);
+    assert_eq!(parsed.tier, Tier::Tier1);
     assert_eq!(parsed.branch_size, 85);
 }
 

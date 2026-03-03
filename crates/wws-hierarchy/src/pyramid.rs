@@ -163,10 +163,11 @@ impl PyramidAllocator {
             if (rank as u32) < cumulative {
                 return match tier_idx {
                     0 if layout.agents_per_tier.len() == 1 => Tier::Executor,
-                    0 => Tier::Tier1,
+                    0 => Tier::Tier0,
                     n if n == last_tier_idx => Tier::Executor,
-                    1 => Tier::Tier2,
-                    n => Tier::TierN(n as u32 + 1),
+                    1 => Tier::Tier1,
+                    2 => Tier::Tier2,
+                    n => Tier::TierN(n as u32),
                 };
             }
         }
@@ -308,9 +309,9 @@ mod tests {
     fn test_tier_assignment() {
         let allocator = PyramidAllocator::default();
         let layout = allocator.compute_layout(100).unwrap();
-        // First 10 agents → Tier1
-        assert_eq!(allocator.assign_tier(0, &layout), Tier::Tier1);
-        assert_eq!(allocator.assign_tier(9, &layout), Tier::Tier1);
+        // First 10 agents → Tier0 (task initiators)
+        assert_eq!(allocator.assign_tier(0, &layout), Tier::Tier0);
+        assert_eq!(allocator.assign_tier(9, &layout), Tier::Tier0);
         // Remaining 90 → Executor (depth=2, so no intermediate tiers)
         assert_eq!(allocator.assign_tier(10, &layout), Tier::Executor);
     }

@@ -7,9 +7,11 @@ use crate::identity::AgentId;
 /// Tier in the dynamic pyramid hierarchy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Tier {
-    /// Top-level orchestrators (High Command)
+    /// Task initiator / injector (top of hierarchy)
+    Tier0,
+    /// Board members — vote, deliberate, decompose tasks
     Tier1,
-    /// Mid-level coordinators
+    /// Mid-level coordinators (legacy alias for larger swarms)
     Tier2,
     /// General tier at specified depth
     TierN(u32),
@@ -20,6 +22,7 @@ pub enum Tier {
 impl Tier {
     pub fn depth(&self) -> u32 {
         match self {
+            Tier::Tier0 => 0,
             Tier::Tier1 => 1,
             Tier::Tier2 => 2,
             Tier::TierN(n) => *n,
@@ -590,6 +593,7 @@ mod tests {
 
     #[test]
     fn test_tier_ordering() {
+        assert!(Tier::Tier0.depth() < Tier::Tier1.depth());
         assert!(Tier::Tier1.depth() < Tier::Tier2.depth());
         assert!(Tier::Tier2.depth() < Tier::TierN(3).depth());
     }

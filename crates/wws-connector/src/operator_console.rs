@@ -1174,6 +1174,7 @@ fn truncate_agent_id(id: &str) -> String {
 
 fn format_tier(tier: &Tier) -> String {
     match tier {
+        Tier::Tier0 => "Tier0".to_string(),
         Tier::Tier1 => "Tier1".to_string(),
         Tier::Tier2 => "Tier2".to_string(),
         Tier::TierN(n) => format!("Tier{}", n),
@@ -1425,7 +1426,7 @@ mod tests {
             merkle_dag: MerkleDag::new(),
             content_store: ContentStore::new(),
             granularity: GranularityAlgorithm::default(),
-            my_tier: Tier::Tier1,
+            my_tier: Tier::Tier0,
             parent_id: None,
             agent_tiers: std::collections::HashMap::new(),
             agent_parents: std::collections::HashMap::new(),
@@ -1437,7 +1438,7 @@ mod tests {
                 hierarchy_depth: 1,
                 branching_factor: 10,
                 current_epoch: 1,
-                my_tier: Tier::Tier1,
+                my_tier: Tier::Tier0,
                 subordinate_count: 0,
                 parent_id: None,
             },
@@ -1574,7 +1575,7 @@ mod tests {
             merkle_dag: MerkleDag::new(),
             content_store: ContentStore::new(),
             granularity: GranularityAlgorithm::default(),
-            my_tier: Tier::Tier1,
+            my_tier: Tier::Tier0,
             parent_id: None,
             agent_tiers: std::collections::HashMap::new(),
             agent_parents: std::collections::HashMap::new(),
@@ -1586,7 +1587,7 @@ mod tests {
                 hierarchy_depth: 1,
                 branching_factor: 10,
                 current_epoch: 1,
-                my_tier: Tier::Tier1,
+                my_tier: Tier::Tier0,
                 subordinate_count: 0,
                 parent_id: None,
             },

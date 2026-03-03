@@ -3055,7 +3055,7 @@ impl WwsConnector {
             return;
         }
 
-        // Task-driven hierarchy: injectors become Tier1, everyone else is Executor.
+        // Task-driven hierarchy: build a proper multi-tier pyramid.
         let members_set: std::collections::HashSet<&String> = members.iter().collect();
 
         let mut injectors: Vec<String> = state
@@ -3088,39 +3088,133 @@ impl WwsConnector {
             return;
         }
 
-        // Injectors are Tier1, everyone else is Executor.
+        // ── Build multi-tier pyramid ──
+        // Tier1: task injectors (board leaders)
+        // Tier2: board members (3-10 for voting quorum)
+        // TierN(3): mid-level coordinators (large swarms only)
+        // Executor: leaf workers
+        //
+        // Sizing:
+        //   pool <= 2  → all Executor under Tier1 (depth 2)
+        //   pool 3..30 → 3 Tier2 (board) + rest Executor (depth 3)
+        //                 e.g. 10 agents: 1 Tier1 → 3 Tier2 → 6 Executor
+        //   pool > 30  → board + TierN(3) coordinators + Executor (depth 4)
+
+        // Tier0 = task initiator/injector
         for inj in &injectors {
-            state.agent_tiers.insert(inj.clone(), Tier::Tier1);
+            state.agent_tiers.insert(inj.clone(), Tier::Tier0);
         }
 
-        let mut executors: Vec<String> = members
+        let mut pool: Vec<String> = members
             .iter()
             .filter(|id| !injectors.contains(id))
             .cloned()
             .collect();
-        executors.sort();
+        pool.sort();
 
-        for exec in &executors {
-            state.agent_tiers.insert(exec.clone(), Tier::Executor);
-        }
+        let pool_size = pool.len();
 
-        // Round-robin assign executors as subordinates of Tier1 injectors.
-        if !executors.is_empty() {
-            for (i, exec) in executors.iter().enumerate() {
+        if pool_size == 0 {
+            // Only injectors, no subordinates.
+            state.network_stats.hierarchy_depth = 1;
+            state.network_stats.total_agents = swarm_size;
+            state.current_layout = None;
+        } else if pool_size <= 2 {
+            // Small swarm: Tier0 → Executor (2 tiers).
+            for exec in &pool {
+                state.agent_tiers.insert(exec.clone(), Tier::Executor);
+            }
+            for (i, exec) in pool.iter().enumerate() {
                 let parent = &injectors[i % injectors.len()];
                 state.agent_parents.insert(exec.clone(), parent.clone());
-                state
-                    .subordinates
-                    .entry(parent.clone())
-                    .or_default()
-                    .push(exec.clone());
+                state.subordinates.entry(parent.clone()).or_default().push(exec.clone());
             }
-        }
+            state.network_stats.hierarchy_depth = 2;
+            state.network_stats.total_agents = swarm_size;
+            state.current_layout = None;
+        } else if pool_size <= 30 {
+            // Medium swarm: Tier0 → Tier1 (board 3-10) → Executor (3 tiers).
+            // Board size: 3 for small pools, scale up to 10 for larger pools.
+            let board_size = if pool_size <= 5 {
+                3.min(pool_size - 1) // ensure at least 1 executor
+            } else if pool_size <= 12 {
+                3
+            } else {
+                // ~1/3 of pool, clamped to 3..10
+                let b = ((pool_size as f64) / 3.0).round() as usize;
+                b.max(3).min(10)
+            };
 
-        let depth = if executors.is_empty() { 1 } else { 2 };
-        state.network_stats.hierarchy_depth = depth;
-        state.network_stats.total_agents = swarm_size;
-        state.current_layout = None;
+            let (board_agents, executor_agents) = pool.split_at(board_size);
+            let board_agents: Vec<String> = board_agents.to_vec();
+            let executor_agents: Vec<String> = executor_agents.to_vec();
+
+            // Board (Tier1) under Tier0 injectors.
+            for (i, b) in board_agents.iter().enumerate() {
+                state.agent_tiers.insert(b.clone(), Tier::Tier1);
+                let parent = &injectors[i % injectors.len()];
+                state.agent_parents.insert(b.clone(), parent.clone());
+                state.subordinates.entry(parent.clone()).or_default().push(b.clone());
+            }
+
+            // Executors distributed round-robin under board members.
+            for (i, exec) in executor_agents.iter().enumerate() {
+                state.agent_tiers.insert(exec.clone(), Tier::Executor);
+                let parent = &board_agents[i % board_agents.len()];
+                state.agent_parents.insert(exec.clone(), parent.clone());
+                state.subordinates.entry(parent.clone()).or_default().push(exec.clone());
+            }
+
+            state.network_stats.hierarchy_depth = 3;
+            state.network_stats.total_agents = swarm_size;
+            state.current_layout = None;
+        } else {
+            // Large swarm (30+): Tier0 → Tier1 (board 5-10) → Tier2 (coordinators) → Executor.
+            let board_size = {
+                let b = ((pool_size as f64).sqrt()).round() as usize;
+                b.max(5).min(10)
+            };
+            // Tier2 coordinators: ~sqrt of remaining pool
+            let remaining = pool_size - board_size;
+            let coord_count = {
+                let c = ((remaining as f64).sqrt()).round() as usize;
+                c.max(3).min(remaining - 1)
+            };
+
+            let board_agents: Vec<String> = pool[..board_size].to_vec();
+            let coord_agents: Vec<String> = pool[board_size..board_size + coord_count].to_vec();
+            let executor_agents: Vec<String> = pool[board_size + coord_count..].to_vec();
+
+            // Board (Tier1) under Tier0.
+            for (i, b) in board_agents.iter().enumerate() {
+                state.agent_tiers.insert(b.clone(), Tier::Tier1);
+                let parent = &injectors[i % injectors.len()];
+                state.agent_parents.insert(b.clone(), parent.clone());
+                state.subordinates.entry(parent.clone()).or_default().push(b.clone());
+            }
+
+            // Tier2 coordinators under board members.
+            for (i, c) in coord_agents.iter().enumerate() {
+                state.agent_tiers.insert(c.clone(), Tier::Tier2);
+                let parent = &board_agents[i % board_agents.len()];
+                state.agent_parents.insert(c.clone(), parent.clone());
+                state.subordinates.entry(parent.clone()).or_default().push(c.clone());
+            }
+
+            // Executors under Tier2 coordinators.
+            if !executor_agents.is_empty() {
+                for (i, exec) in executor_agents.iter().enumerate() {
+                    state.agent_tiers.insert(exec.clone(), Tier::Executor);
+                    let parent = &coord_agents[i % coord_agents.len()];
+                    state.agent_parents.insert(exec.clone(), parent.clone());
+                    state.subordinates.entry(parent.clone()).or_default().push(exec.clone());
+                }
+            }
+
+            state.network_stats.hierarchy_depth = 4;
+            state.network_stats.total_agents = swarm_size;
+            state.current_layout = None;
+        }
 
         let my_id = state.agent_id.as_str().to_string();
         if let Some(my_tier) = state.agent_tiers.get(&my_id).copied() {
@@ -3138,6 +3232,7 @@ impl WwsConnector {
 
     fn tier_to_level(tier: Tier) -> Option<u32> {
         match tier {
+            Tier::Tier0 => Some(0),
             Tier::Tier1 => Some(1),
             Tier::Tier2 => Some(2),
             Tier::TierN(n) => Some(n),
@@ -3147,6 +3242,7 @@ impl WwsConnector {
 
     fn level_to_tier(level: u32) -> Tier {
         match level {
+            0 => Tier::Tier0,
             1 => Tier::Tier1,
             2 => Tier::Tier2,
             n => Tier::TierN(n),

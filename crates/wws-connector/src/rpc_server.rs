@@ -1554,11 +1554,13 @@ async fn handle_register_agent(
                     } else if level == (levels - 1) {
                         Tier::Executor
                     } else if level == 0 {
-                        Tier::Tier1
+                        Tier::Tier0
                     } else if level == 1 {
+                        Tier::Tier1
+                    } else if level == 2 {
                         Tier::Tier2
                     } else {
-                        Tier::TierN((level + 1) as u32)
+                        Tier::TierN((level) as u32)
                     };
                     state.agent_tiers.insert(member_id, tier);
                 }
@@ -1708,6 +1710,7 @@ fn dynamic_branching_factor(swarm_size: u64) -> u64 {
 
 fn tier_from_level(level: u32) -> Tier {
     match level {
+        0 => Tier::Tier0,
         1 => Tier::Tier1,
         2 => Tier::Tier2,
         n => Tier::TierN(n),

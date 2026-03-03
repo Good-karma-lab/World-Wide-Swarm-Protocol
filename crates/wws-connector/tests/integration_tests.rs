@@ -280,8 +280,8 @@ fn e2e_multilevel_cascade_decomposition_and_backprop() {
     ];
 
     let tier2_nodes = vec![
-        (AgentId::new("tier2-a".into()), Tier::Tier2),
-        (AgentId::new("tier2-b".into()), Tier::Tier2),
+        (AgentId::new("tier2-a".into()), Tier::Tier1),
+        (AgentId::new("tier2-b".into()), Tier::Tier1),
     ];
     let root_assignments = cascade
         .distribute_subtasks("root-task", &root_plan, &tier2_nodes, 1)
