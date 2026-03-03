@@ -84,7 +84,7 @@ pub struct NetworkConfig {
     /// Bootstrap peer multiaddresses.
     #[serde(default)]
     pub bootstrap_peers: Vec<String>,
-    /// Whether mDNS local discovery is enabled. Disabled by default in production; use --enable-mdns for local development.
+    /// Whether mDNS local discovery is enabled. Enabled by default for zero-conf LAN discovery.
     #[serde(default = "default_true")]
     pub mdns_enabled: bool,
     /// Idle connection timeout in seconds.
@@ -282,7 +282,7 @@ impl Default for NetworkConfig {
         Self {
             listen_addr: default_listen_addr(),
             bootstrap_peers: Vec::new(),
-            mdns_enabled: false,
+            mdns_enabled: true,
             idle_connection_timeout_secs: default_idle_timeout(),
             bootstrap_mode: false,
             enable_quic: true,
@@ -422,5 +422,16 @@ impl ConnectorConfig {
     /// Parse the RPC bind address into a SocketAddr.
     pub fn rpc_socket_addr(&self) -> Result<SocketAddr, anyhow::Error> {
         Ok(self.rpc.bind_addr.parse()?)
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn network_config_default_enables_mdns() {
+        let config = NetworkConfig::default();
+        assert!(config.mdns_enabled, "mDNS should be enabled by default for zero-conf discovery");
     }
 }
