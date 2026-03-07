@@ -70,7 +70,7 @@ impl Default for BehaviourConfig {
             protocol_version: wws_protocol::PROTOCOL_VERSION.to_string(),
             kad_protocol: "/wws/kad/1.0.0".to_string(),
             gossipsub_heartbeat: Duration::from_secs(1),
-            gossipsub_strict: true,
+            gossipsub_strict: false,
             mdns_query_interval: Duration::from_secs(5),
             ping_interval: Duration::from_secs(15),
         }
@@ -105,6 +105,8 @@ impl SwarmBehaviour {
             } else {
                 gossipsub::ValidationMode::Permissive
             })
+            .flood_publish(true)
+            .mesh_outbound_min(0)
             .build()
             .map_err(|e| NetworkError::Behaviour(format!("GossipSub config error: {e}")))?;
 

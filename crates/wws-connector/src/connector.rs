@@ -1128,38 +1128,43 @@ impl WwsConnector {
                         _ => my_tier_level == task_tier_level, // Coordinators only handle their level
                     };
 
+                    // Always store task for observability (dashboard visibility)
+                    let task_id = params.task.task_id.clone();
+                    state
+                        .task_details
+                        .insert(task_id.clone(), params.task.clone());
+                    state.push_task_timeline_event(
+                        &task_id,
+                        if should_process { "injected" } else { "observed" },
+                        format!("Task {}: {}", if should_process { "injected" } else { "observed" }, params.task.description),
+                        None,
+                    );
+
                     if !should_process {
                         tracing::debug!(
-                            task_id = %params.task.task_id,
+                            task_id = %task_id,
                             my_tier = ?my_tier,
                             task_tier = task_tier_level,
-                            "Ignoring task for different tier"
+                            "Observing task for different tier"
                         );
+                        let swarm_id = state.current_swarm_id.as_str().to_string();
                         drop(state);
+                        // Subscribe to flow topics so we observe proposals/votes/results
+                        self.subscribe_task_flow_topics(&swarm_id, &task_id).await;
                         return;
                     }
 
-                    state.task_set.add(params.task.task_id.clone());
-                    state
-                        .task_details
-                        .insert(params.task.task_id.clone(), params.task.clone());
-                    state.push_task_timeline_event(
-                        &params.task.task_id,
-                        "injected",
-                        format!("Task injected: {}", params.task.description),
-                        None,
-                    );
+                    state.task_set.add(task_id.clone());
                     state.push_log(
                         LogCategory::Task,
                         format!(
                             "Task injected at my tier: {} ({})",
-                            params.task.task_id, params.task.description
+                            task_id, params.task.description
                         ),
                     );
 
                     // All coordinator tiers initialize RFP for competitive planning
                     let is_coordinator = my_tier != Tier::Executor;
-                    let task_id = params.task.task_id.clone();
                     let epoch = params.task.epoch;
 
                     if is_coordinator {
@@ -1213,7 +1218,7 @@ impl WwsConnector {
                     });
 
                     tracing::info!(
-                        task_id = %params.task.task_id,
+                        task_id = %task_id,
                         my_tier = ?my_tier,
                         is_coordinator,
                         "Task received and accepted"
